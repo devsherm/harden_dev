@@ -7,9 +7,7 @@
 <div id="blog_comments">
   <% @blog_comments.each do |blog_comment| %>
     <%= render blog_comment %>
-    <p>
-      <%= link_to "Show this comment", blog_comment %>
-    </p>
+    <%= link_to "Edit", edit_blog_comment_path(blog_comment) %>
   <% end %>
 </div>
 

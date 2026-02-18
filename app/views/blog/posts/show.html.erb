@@ -1,10 +1,67 @@
 <p style="color: green"><%= notice %></p>
 
-<%= render @blog_post %>
+<h1><%= @blog_post.title %></h1>
+
+<p>By <%= @blog_post.author %></p>
+<% if @blog_post.topic.present? %>
+  <p>Topic: <%= @blog_post.topic %></p>
+<% end %>
+
+<div><%= @blog_post.body %></div>
+
+<p>Posted on <%= @blog_post.created_at %></p>
 
 <div>
-  <%= link_to "Edit this post", edit_blog_post_path(@blog_post) %> |
-  <%= link_to "Back to posts", blog_posts_path %>
-
-  <%= button_to "Destroy this post", @blog_post, method: :delete %>
+  <%= link_to "Edit", edit_blog_post_path(@blog_post) %>
+  <%= button_to "Delete", @blog_post, method: :delete %>
 </div>
+
+<h2>Comments</h2>
+
+<% if @blog_post.comments.any? %>
+  <% @blog_post.comments.order(:created_at).each do |comment| %>
+    <div id="<%= dom_id comment %>">
+      <p><strong><%= comment.author %></strong></p>
+      <p><%= comment.body %></p>
+      <% if comment.liked_by_author.present? %>
+        <p>Liked by <%= comment.liked_by_author %></p>
+      <% end %>
+      <p><%= comment.created_at %></p>
+      <%= button_to(comment.liked_by_author.present? ? "Unlike" : "Like", toggle_like_blog_comment_path(comment), method: :patch) %>
+      <p>
+        <%= link_to "Edit", edit_blog_comment_path(comment) %>
+        <%= button_to "Delete", blog_comment_path(comment), method: :delete %>
+      </p>
+    </div>
+  <% end %>
+<% else %>
+  <p>No comments yet.</p>
+<% end %>
+
+<h3>Leave a comment</h3>
+
+<%= form_with(model: @blog_comment, url: blog_post_comments_path(@blog_post)) do |form| %>
+  <% if @blog_comment.errors.any? %>
+    <div>
+      <ul>
+        <% @blog_comment.errors.full_messages.each do |message| %>
+          <li><%= message %></li>
+        <% end %>
+      </ul>
+    </div>
+  <% end %>
+
+  <div>
+    <%= form.label :author, style: "display: block" %>
+    <%= form.text_field :author %>
+  </div>
+
+  <div>
+    <%= form.label :body, style: "display: block" %>
+    <%= form.textarea :body %>
+  </div>
+
+  <div>
+    <%= form.submit "Post comment" %>
+  </div>
+<% end %>

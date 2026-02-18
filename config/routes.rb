@@ -1,7 +1,16 @@
 Rails.application.routes.draw do
+  get "/", to: redirect("/blog/posts", status: 302), as: :root
+
   namespace :blog do
-    resources :comments
+    resources :comments, except: [:show] do
+      member do
+        patch :toggle_like
+      end
+    end
     resources :posts
+    resources :posts, only: [] do
+      resources :comments, only: [:create]
+    end
   end
   # Define your application routes per the DSL in https://guides.rubyonrails.org/routing.html
 

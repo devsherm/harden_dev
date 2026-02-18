@@ -1,66 +1,54 @@
-# Blog Application --- Spec
+# Blog Application Spec
 
 ## Glossary
 
 - **Post**: A blog article authored by a single person. Stored in `blog_posts`.
 - **Comment**: A reader response attached to exactly one Post. Stored in `blog_comments`.
-- **Author**: A free-text string identifying who wrote a Post or Comment. Not an authenticated user --- just a name.
+- **Author**: A free-text string identifying who wrote a Post or Comment. Not an authenticated user — just a name.
 - **Topic**: A free-text category label on a Post (e.g., "Rails", "Design"). Optional.
-- **Liked by Author**: A string column on a Comment (`liked_by_author`). Currently a free-text input with no application-level behavior --- the value is whatever the user types.
+- **Liked by Author**: A flag on a Comment indicating the Post's author has endorsed it. When set, contains the Post author's name.
 
 ## Intent
 
-A minimal multi-page blog where visitors can read posts, create new posts, and leave comments on existing posts. The application serves as a straightforward CRUD exercise --- no authentication, no rich text, no media uploads.
+A minimal multi-page blog where visitors can read posts, create new posts, and leave comments on existing posts. The application serves as a straightforward CRUD exercise — no authentication, no rich text, no media uploads.
 
 ## Domain Rules
 
 - A Post has a **title**, **body**, **author**, and optional **topic**.
-- A Comment has an **author**, **body**, and belongs to exactly one Post (intended to be enforced by a foreign key constraint --- see Known Defects below).
-- A Comment has a `liked_by_author` string field with no application-level behavior --- it is a free-text input.
-- Deleting a Post that has Comments is intended to raise `ActiveRecord::InvalidForeignKey` (no cascading delete), but this behavior is currently untestable because the broken foreign key prevents Comment creation (see Known Defects below).
+- A Comment has an **author**, **body**, and belongs to exactly one Post (enforced by a foreign key constraint).
+- A Comment may be marked as **liked by author**.
+- Deleting a Post deletes its associated Comments (dependent destroy).
 - Posts and Comments are publicly readable with no access control.
-
-### Known Defects
-
-The foreign key on `blog_comments` is misconfigured. The migration uses `t.references :post, null: false, foreign_key: true`, which generates `add_foreign_key "blog_comments", "posts"`. Because the Post model is namespaced under `Blog`, the actual table is named `blog_posts`, not `posts`. The FK therefore references a non-existent `posts` table.
-
-**Impact**: With Rails 8.1's SQLite foreign key enforcement enabled, any `INSERT` into `blog_comments` raises `ActiveRecord::StatementInvalid: SQLite3::SQLException: no such table: main.posts`. This means:
-
-- No Comments can be created through the application or in tests.
-- All Comment-related controller success paths are unreachable.
-- The `belongs_to :post` validation path is also unreachable --- the database error occurs before Rails validations run on save.
-- The delete-Post-with-Comments scenario cannot be tested.
-
-The fix requires a migration that corrects the foreign key to reference `blog_posts` instead of `posts`.
 
 ## Technical Constraints
 
 ### Models
 
-- `Blog::Post` has no validations. `Blog::Post.new.valid?` returns `true`.
-- `Blog::Post` has no associations --- it does not declare `has_many :comments`.
-- `Blog::Comment` has no explicit validations. The only validation is the implicit `belongs_to :post` presence check (Rails default `optional: false`).
+- `Blog::Post` validates presence of **title**, **body**, and **author**.
+- `Blog::Post` has many Comments (`has_many :comments, dependent: :destroy`).
+- `Blog::Comment` validates presence of **author**, **body**, and **post** association.
 - `Blog::Comment` belongs to a Post (`belongs_to :post`).
-- The foreign key from `blog_comments.post_id` is declared in the schema but references the wrong table (`posts` instead of `blog_posts`). See Known Defects above.
+- The foreign key from `blog_comments.post_id` to `blog_posts.id` is enforced at the database level.
 
 ### Controllers
 
+- `ApplicationController` enforces `allow_browser versions: :modern` and calls `stale_when_importmap_changes`, which invalidates ETags for HTML responses when the importmap changes. These behaviors are inherited by all controllers.
 - `Blog::PostsController` provides standard CRUD actions: index, show, new, create, edit, update, destroy.
-- `Blog::CommentsController` provides standard CRUD actions: index, show, new, create, edit, update, destroy. The show action renders a single Comment with "Edit this comment", "Back to comments", and "Destroy this comment" controls.
-- There is no `toggle_like` action --- the `liked_by_author` field is edited only via the standard Comment form.
+- `Blog::CommentsController` provides actions: index, new, create, edit, update, destroy. There is no show action — Comments are viewed on the parent Post's show page or via the Comment index.
+- `Blog::CommentsController` provides a `toggle_like` action that toggles the `liked_by_author` field on a Comment (see Liked by Author under Views).
 - Both controllers use `params.expect()` for strong parameters.
-- `ApplicationController` enforces `allow_browser versions: :modern` and calls `stale_when_importmap_changes`, which invalidates ETags for HTML responses when the importmap changes.
-- Since `Blog::Post` has no validations, creating or updating a Post always succeeds (the create-failure and update-failure code paths in the controller are unreachable).
-- Creating a Comment with any params fails at the database level with `ActiveRecord::StatementInvalid` due to the broken foreign key (see Known Defects). The controller does not rescue this error. The `belongs_to :post` validation path and the success redirect path are both unreachable.
-- Updating a Comment with invalid params returns validation errors (HTTP 422) and re-renders the edit form with error summary. (Note: no Comments can currently be created to update --- see Known Defects.)
+- Creating a Post with a blank title, body, or author returns validation errors and re-renders the form.
+- Updating a Post with invalid params returns validation errors (HTTP 422) and re-renders the edit form with error summary.
+- Creating a Comment with a blank author or body returns validation errors and re-renders the Post show page with the error summary above the inline Comment form. The submitted field values are preserved.
+- Updating a Comment with invalid params returns validation errors (HTTP 422) and re-renders the edit form with error summary.
 
 ### Routes
 
 - Posts are accessible under `namespace :blog` at `/blog/posts`.
-- Comments are accessible under `namespace :blog` at `/blog/comments` (flat routes for all seven CRUD actions including show).
-- There are no nested routes --- Comments are not routed under Posts.
-- There are no custom routes --- no `toggle_like` or other non-CRUD actions.
-- There is no root route. `GET /` returns a routing error. The `root "posts#index"` line is commented out in `routes.rb`.
+- Comments are accessible under `namespace :blog` at `/blog/comments` (flat routes for index, new, create, edit, update, destroy).
+- Comments are also accessible via a nested route under Posts: `POST /blog/posts/:post_id/comments` for creating a Comment on a specific Post. The inline Comment form on the Post show page submits to this nested route.
+- A custom member route `PATCH /blog/comments/:id/toggle_like` is exposed for the liked-by-author toggle.
+- The root route (`GET /`) issues a **302 redirect** to `/blog/posts`.
 
 ### Views
 
@@ -68,63 +56,69 @@ All views use ERB templates with partials for reuse. JSON representations are av
 
 #### Layout and Navigation
 
-- The application layout has no persistent header or navigation element. The `<body>` contains only `<%= yield %>`.
-- There is no consistent "Back to posts" navigation pattern across pages. Individual pages include their own navigation links (see Post Show, Comment Show, Comment Edit below).
+- The application layout includes a persistent header with the application name ("Blog") linked to the root path.
+- Every page below the header includes a "Back to posts" link so the user can always return to the index in one click.
 
 #### Post Index (`/blog/posts`)
 
-- Displays all Posts via `Blog::Post.all` with no ordering --- records appear in database insertion order.
-- Each Post in the list renders via the `_post` partial showing **title**, **body**, **topic**, and **author** as labeled text fields. Titles are not linked to the Post show page --- a separate "Show this post" link appears below each Post.
-- A "New post" link appears below the list, linking to the new Post form.
-- There is no empty state --- when no Posts exist, the page displays only the heading "Posts" and the "New post" link.
+- Displays all Posts ordered by **created_at descending** (newest first).
+- Each Post in the list shows **title** (linked to the Post show page), **author**, and **topic** (if present). If topic is blank, no topic label is rendered — no "N/A" or placeholder.
+- A "New post" link appears above the list, linking to the new Post form.
+- **Empty state**: When no Posts exist, the page displays the text "No posts yet." followed by the "New post" link.
 
 #### Post Show (`/blog/posts/:id`)
 
-- Displays the Post via the `_post` partial: **title**, **body**, **topic**, and **author** as labeled text. No **created_at** timestamp is shown.
-- Below the Post, an "Edit this post" link, a "Back to posts" link, and a "Destroy this post" button are displayed.
-- There is no Comments section --- the Post show page does not display, list, or reference Comments in any way.
-- There is no inline Comment form.
+- Displays the Post's **title**, **author**, **topic** (if present), **body**, and **created_at** timestamp.
+- Below the Post body, an "Edit" link and a "Delete" button are displayed. The Delete button submits a `DELETE` request — no confirmation dialog is required.
+- Below the Post actions, a **Comments section** is rendered with the heading "Comments".
+- Comments are listed in **created_at ascending** order (oldest first, preserving chronological conversation flow).
+- Each Comment displays **author**, **body**, **created_at** timestamp, and the **liked by author** indicator (see below).
+- Each Comment has an "Edit" link and a "Delete" link.
+- **Comment empty state**: When the Post has no Comments, the text "No comments yet." is displayed.
+- Below the comments list, an inline **new Comment form** is rendered directly on the Post show page (not a separate page). The form contains fields for **author** (text input) and **body** (textarea), plus a "Post comment" submit button. The form submits to the nested route `POST /blog/posts/:post_id/comments`.
 
 #### Liked by Author
 
-- The `liked_by_author` field exists on the Comment model as a string column.
-- The Comment form renders it as a plain text input labeled "Liked by author". The user can type any value.
-- There is no toggle button, no Like/Unlike behavior, and no visual indicator. The field behaves identically to the author or body fields.
-- The value is displayed as-is in the Comment partial: `<strong>Liked by author:</strong> {value}`.
+- On the Post show page, each Comment displays a "Like" or "Unlike" toggle button that submits a `PATCH` request to `/blog/comments/:id/toggle_like`.
+- When a Comment's `liked_by_author` field is blank or empty, the toggle reads "Like" and submitting it sets the field to the Post author's name.
+- When a Comment's `liked_by_author` field is populated, the toggle reads "Unlike" and submitting it clears the field. The Comment also displays the text "Liked by {author name}" below the Comment body.
+- After toggling, the user is redirected back to the parent Post's show page.
+- Since there is no authentication, the toggle is available to any visitor — this is intentional and consistent with the no-auth design.
 
 #### Post Form (New / Edit)
 
 - The new Post form is at `/blog/posts/new`. The edit Post form is at `/blog/posts/:id/edit`.
-- Both forms contain: **title** (text input), **body** (textarea), **topic** (text input), **author** (text input).
-- The submit button uses Rails-default labeling: "Create Post" on the new form and "Update Post" on the edit form.
+- Both forms contain: **title** (text input), **body** (textarea), **author** (text input), and **topic** (text input).
+- A "Create post" submit button appears on the new form and "Update post" on the edit form.
 - On successful create, the user is redirected to the new Post's show page with a flash notice: "Post was successfully created."
 - On successful update, the user is redirected to the Post's show page with a flash notice: "Post was successfully updated."
 - On successful destroy, the user is redirected to the Post index with a flash notice: "Post was successfully destroyed."
 
 #### Comment Form (New / Edit)
 
-- The standalone new Comment form at `/blog/comments/new` and edit at `/blog/comments/:id/edit` are the only paths for creating and editing Comments. There is no inline form on the Post show page.
-- Both forms contain: **post_id** (text input --- raw ID, not a dropdown), **body** (textarea), **author** (text input), and **liked_by_author** (text input).
-- The Comment edit page includes a "Show this comment" link and a "Back to comments" link pointing to the Comments index.
-- On successful Comment create, the user is redirected to the Comment's show page with a flash notice: "Comment was successfully created." (Currently unreachable --- see Known Defects.)
-- On successful Comment update, the user is redirected to the Comment's show page with a flash notice: "Comment was successfully updated."
-- On successful Comment destroy, the user is redirected to the Comments index with a flash notice: "Comment was successfully destroyed."
+- The primary path for creating a Comment is the inline form on the Post show page (described above).
+- A standalone new Comment form exists at `/blog/comments/new` and edit at `/blog/comments/:id/edit`, consistent with the resourceful routes, but these are secondary paths.
+- The standalone new Comment form contains **post** (dropdown or ID input for selecting the parent Post), **author** (text input), and **body** (textarea).
+- The Comment edit form contains **author** (text input) and **body** (textarea). The `liked_by_author` field is not exposed on any Comment form — it is controlled exclusively via the toggle button on the Post show page.
+- The Comment edit page includes a "Back to post" link pointing to the parent Post's show page.
+- On successful Comment create, the user is redirected back to the parent Post's show page with a flash notice: "Comment was successfully created."
+- On successful Comment update, the user is redirected back to the parent Post's show page with a flash notice: "Comment was successfully updated."
+- On successful Comment destroy, the user is redirected back to the parent Post's show page with a flash notice: "Comment was successfully destroyed."
 
 #### Validation Error Display
 
-- The form templates include error display blocks using `style="color: red"` with a `pluralize`-based header ("X error(s) prohibited this blog_post from being saved").
-- The error summary lists each validation error as a bullet point.
-- Fields with errors are visually distinguished --- wrapped in a `div.field_with_errors` so the user can see which fields need attention.
-- Since `Blog::Post` has no validations, the Post form error display block is never triggered. Comment form errors are also unreachable in practice due to the broken foreign key (see Known Defects).
+- When a form submission fails validation, the form is re-rendered (HTTP 422) with an error summary at the top of the form.
+- The error summary lists each validation error as a bullet point (e.g., "Title can't be blank").
+- Fields with errors are visually distinguished — wrapped in a `div.field_with_errors` so the user can see which fields need attention.
 
 #### Styling
 
 - The application uses the Rails default stylesheet. No custom CSS framework is required.
-- Visual polish is a non-goal --- functional clarity and correct HTML semantics take priority over aesthetics.
+- Visual polish is a non-goal — functional clarity and correct HTML semantics take priority over aesthetics.
 
 ### Seed Data
 
-- No seed data is defined. `db/seeds.rb` contains only comments --- no records are created.
+- `db/seeds.rb` creates a small representative set of Posts and Comments so the app is not empty on first run.
 
 ## Non-Goals
 
@@ -134,7 +128,7 @@ All views use ERB templates with partials for reuse. JSON representations are av
 - **Search or filtering**: No search bar, no topic-based filtering.
 - **API versioning**: The JSON endpoints are not versioned.
 - **Email or notifications**: No mailers, no Action Cable broadcasts.
-- **Comment nesting**: Comments are flat --- no replies to other Comments.
+- **Comment nesting**: Comments are flat — no replies to other Comments.
 
 ## Testability Hooks
 
@@ -142,40 +136,53 @@ All views use ERB templates with partials for reuse. JSON representations are av
 
 | Assertion | How to verify |
 |---|---|
-| Post has no validations | `Blog::Post.new.valid?` returns `true` |
-| Post has no `has_many` association | `Blog::Post.new.respond_to?(:comments)` returns `false` |
-| Comment belongs to Post (model-level) | `Blog::Comment.new(author: "a", body: "x").valid?` returns `false` with error on `post` |
-| Foreign key references wrong table | `ActiveRecord::Base.connection.foreign_keys("blog_comments")` returns a FK with `to_table: "posts"` instead of `"blog_posts"` |
-| Comment creation fails at database level | `Blog::Comment.create!(post: Blog::Post.create!, author: "a", body: "x")` raises `ActiveRecord::StatementInvalid` with message matching `no such table: main.posts` |
+| Post requires title | `Blog::Post.new(body: "x", author: "a").valid?` returns `false` with error on `title` |
+| Post requires body | `Blog::Post.new(title: "x", author: "a").valid?` returns `false` with error on `body` |
+| Post requires author | `Blog::Post.new(title: "x", body: "x").valid?` returns `false` with error on `author` |
+| Comment requires author | `Blog::Comment.new(body: "x", post: some_post).valid?` returns `false` with error on `author` |
+| Comment requires body | `Blog::Comment.new(author: "a", post: some_post).valid?` returns `false` with error on `body` |
+| Comment belongs to Post | `Blog::Comment.new(author: "a", body: "x").valid?` returns `false` with error on `post` |
+| Destroying a Post destroys its Comments | After `post.destroy`, `Blog::Comment.where(post_id: post.id).count` is `0` |
 
 ### Route and Controller Assertions
 
 | Assertion | How to verify |
 |---|---|
+| POST /blog/posts with valid params redirects | Integration test confirms 302 redirect to the new Post's show page |
+| POST /blog/posts with blank title re-renders form | Integration test confirms 422 and form with error messages |
+| PATCH /blog/posts/:id with blank title re-renders edit form | Integration test confirms 422 and edit form with error messages |
+| POST /blog/posts/:post_id/comments with valid params redirects | Integration test confirms 302 redirect to the parent Post's show page |
+| POST /blog/posts/:post_id/comments with blank body re-renders Post show | Integration test confirms 422 and Post show page with Comment error messages |
+| PATCH /blog/comments/:id with blank body re-renders edit form | Integration test confirms 422 and edit form with error messages |
+| PATCH /blog/comments/:id/toggle_like toggles liked_by_author | Integration test confirms redirect to parent Post show and `liked_by_author` is set/cleared |
 | GET /blog/posts returns 200 | Integration test confirms success |
 | GET /blog/posts/:id returns 200 | Integration test confirms success for an existing Post |
-| GET /blog/comments/:id returns 200 | Integration test confirms success for an existing Comment (show action exists). Note: requires a Comment to exist, which is currently blocked by the FK defect. |
 | GET /blog/posts.json returns JSON array | Response content type is `application/json` |
-| Root path returns routing error | `GET /` returns `ActionController::RoutingError` --- no root route is defined |
-| POST /blog/posts with valid params redirects to Post show | Integration test confirms 302 redirect to the new Post's show page |
-| POST /blog/comments with valid params raises StatementInvalid | Due to the broken FK, the controller raises `ActiveRecord::StatementInvalid` instead of redirecting |
-| DELETE /blog/comments/:id redirects to Comments index | Integration test confirms redirect to `/blog/comments` with flash "Comment was successfully destroyed." Note: requires a Comment to exist, which is currently blocked by the FK defect. |
+| Root path redirects to Post index | `GET /` returns 302 redirect to `/blog/posts` |
+| Comment delete redirects to parent Post show | Integration test: `DELETE /blog/comments/:id` redirects to the parent Post's show page with flash "Comment was successfully destroyed." |
 
 ### UX Assertions
 
 | Assertion | How to verify |
 |---|---|
-| Post index has no ordering guarantee | Posts appear in database insertion order; no `order` clause is applied |
-| Post index has no empty state | With no Posts, the index page shows only "Posts" heading and "New post" link --- no "No posts yet." message |
-| Post index does not link titles to show pages | Each Post's title appears as plain text; a separate "Show this post" link provides navigation |
-| Post index displays "New post" link below the list | System test: index page contains a link with text "New post" pointing to `/blog/posts/new`, rendered after the post list |
-| Post show has no Comments section | System test: Post show page contains no "Comments" heading, no Comment list, and no inline Comment form |
-| Post show has "Back to posts" link | System test: Post show page contains a "Back to posts" link whose `href` matches the Post index path |
-| Post show displays edit and delete actions | System test: show page contains an "Edit this post" link and a "Destroy this post" button |
-| No navigation header | System test: the layout `<body>` contains no persistent header or "Blog" link |
-| `liked_by_author` is a plain text input | System test: the Comment form contains a text input labeled "Liked by author" with no toggle behavior |
-| Comment edit page links to Comments index | System test: Comment edit page contains a "Back to comments" link whose `href` matches the Comments index path |
+| Post index orders by newest first | System test: create Post A then Post B; Post B appears above Post A on the index |
+| Post index links titles to show pages | System test: index page contains a link with the Post title whose `href` matches the Post show path |
+| Post index shows "No posts yet." when empty | System test: with no Posts, index page contains the text "No posts yet." |
+| Post index displays "New post" link | System test: index page contains a link with text "New post" pointing to `/blog/posts/new` |
+| Post show displays edit and delete actions | System test: show page contains an "Edit" link and a "Delete" button |
+| Post show lists Comments oldest first | System test: create Comment A then Comment B on a Post; Comment A appears above Comment B |
+| Post show inline Comment form is present | System test: Post show page contains a form with author input, body textarea, and "Post comment" submit button |
+| Post show displays "No comments yet." when no Comments | System test: Post with zero Comments shows "No comments yet." |
+| Comment liked toggle sets liked_by_author | System test: clicking "Like" on a Comment on a Post by "Alice" sets `liked_by_author` to "Alice" and displays "Liked by Alice" |
+| Comment unlike toggle clears liked_by_author | System test: clicking "Unlike" on a liked Comment clears `liked_by_author` and removes the liked indicator |
 | Flash notice appears after Post create | System test: creating a Post shows "Post was successfully created." |
 | Flash notice appears after Post update | System test: updating a Post shows "Post was successfully updated." |
 | Flash notice appears after Post destroy | System test: destroying a Post redirects to index with "Post was successfully destroyed." |
-| Seed data is empty | After `rails db:seed`, `Blog::Post.count` is `0` and `Blog::Comment.count` is `0` |
+| Flash notice appears after Comment create | System test: creating a Comment redirects to Post show with "Comment was successfully created." |
+| Validation errors display on failed Post create | System test: submitting a Post with blank title shows error summary containing "Title can't be blank" |
+| Validation errors display on failed Post update | System test: editing a Post and blanking the title shows error summary containing "Title can't be blank" |
+| Validation errors display on failed Comment create | System test: submitting inline Comment with blank body on Post show page shows error summary containing "Body can't be blank" |
+| Comment edit page links back to parent Post | System test: Comment edit page contains a "Back to post" link whose `href` matches the parent Post's show path |
+| Post show page has "Back to posts" link | System test: Post show page contains a "Back to posts" link whose `href` matches the Post index path |
+| Navigation header links to root | System test: every page contains a header link with text "Blog" pointing to the root path |
+| Seed data populates Posts and Comments | After `rails db:seed`, `Blog::Post.count > 0` and `Blog::Comment.count > 0` |

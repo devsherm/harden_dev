@@ -1,11 +1,9 @@
 <%= form_with(model: blog_post) do |form| %>
   <% if blog_post.errors.any? %>
-    <div style="color: red">
-      <h2><%= pluralize(blog_post.errors.count, "error") %> prohibited this blog_post from being saved:</h2>
-
+    <div>
       <ul>
-        <% blog_post.errors.each do |error| %>
-          <li><%= error.full_message %></li>
+        <% blog_post.errors.full_messages.each do |message| %>
+          <li><%= message %></li>
         <% end %>
       </ul>
     </div>
@@ -32,6 +30,6 @@
   </div>
 
   <div>
-    <%= form.submit %>
+    <%= form.submit blog_post.new_record? ? "Create post" : "Update post" %>
   </div>
 <% end %>

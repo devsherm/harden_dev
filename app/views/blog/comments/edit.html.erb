@@ -7,6 +7,5 @@
 <br>
 
 <div>
-  <%= link_to "Show this comment", @blog_comment %> |
-  <%= link_to "Back to comments", blog_comments_path %>
+  <%= link_to "Back to post", blog_post_path(@blog_comment.post) %>
 </div>

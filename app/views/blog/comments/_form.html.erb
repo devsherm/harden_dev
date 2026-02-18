@@ -1,11 +1,9 @@
 <%= form_with(model: blog_comment) do |form| %>
   <% if blog_comment.errors.any? %>
-    <div style="color: red">
-      <h2><%= pluralize(blog_comment.errors.count, "error") %> prohibited this blog_comment from being saved:</h2>
-
+    <div>
       <ul>
-        <% blog_comment.errors.each do |error| %>
-          <li><%= error.full_message %></li>
+        <% blog_comment.errors.full_messages.each do |message| %>
+          <li><%= message %></li>
         <% end %>
       </ul>
     </div>
@@ -13,7 +11,7 @@
 
   <div>
     <%= form.label :post_id, style: "display: block" %>
-    <%= form.text_field :post_id %>
+    <%= form.collection_select :post_id, Blog::Post.all, :id, :title, prompt: "Select a post" %>
   </div>
 
   <div>
@@ -24,11 +22,6 @@
   <div>
     <%= form.label :author, style: "display: block" %>
     <%= form.text_field :author %>
-  </div>
-
-  <div>
-    <%= form.label :liked_by_author, style: "display: block" %>
-    <%= form.text_field :liked_by_author %>
   </div>
 
   <div>

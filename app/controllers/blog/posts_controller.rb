@@ -3,11 +3,12 @@ class Blog::PostsController < ApplicationController
 
   # GET /blog/posts or /blog/posts.json
   def index
-    @blog_posts = Blog::Post.all
+    @blog_posts = Blog::Post.order(created_at: :desc)
   end
 
   # GET /blog/posts/1 or /blog/posts/1.json
   def show
+    @blog_comment = Blog::Comment.new(post: @blog_post)
   end
 
   # GET /blog/posts/new

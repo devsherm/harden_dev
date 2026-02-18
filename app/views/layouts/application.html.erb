@@ -24,6 +24,12 @@
   </head>
 
   <body>
+    <header>
+      <%= link_to "Blog", root_path %>
+    </header>
+    <nav>
+      <%= link_to "Back to posts", blog_posts_path %>
+    </nav>
     <%= yield %>
   </body>
 </html>

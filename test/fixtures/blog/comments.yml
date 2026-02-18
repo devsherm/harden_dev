@@ -1,13 +1,11 @@
-# Read about fixtures at https://api.rubyonrails.org/classes/ActiveRecord/FixtureSet.html
-
 one:
   post: one
-  body: MyText
-  author: MyString
-  liked_by_author: MyString
+  body: Great article!
+  author: Charlie
+  liked_by_author:
 
 two:
   post: two
-  body: MyText
-  author: MyString
-  liked_by_author: MyString
+  body: Thanks for sharing.
+  author: Diana
+  liked_by_author:
