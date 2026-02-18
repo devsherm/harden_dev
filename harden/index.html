@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Harden Orchestrator</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface-hover: #222633;
+      --border: #2a2e3b;
+      --text: #e1e4ed;
+      --text-muted: #8b90a0;
+      --accent: #6c8cff;
+      --green: #4ade80;
+      --yellow: #fbbf24;
+      --red: #f87171;
+      --orange: #fb923c;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+      background: var(--bg);
+      color: var(--text);
+      padding: 2rem;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 2rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    h1 { font-size: 1.4rem; font-weight: 600; }
+
+    .phase-badge {
+      padding: 0.3rem 0.8rem;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .phase-idle { background: var(--border); }
+    .phase-discovering, .phase-analyzing { background: #2563eb33; color: var(--accent); }
+    .phase-awaiting_decisions { background: #f59e0b33; color: var(--yellow); }
+    .phase-hardening { background: #8b5cf633; color: #a78bfa; }
+    .phase-verifying { background: #6366f133; color: #818cf8; }
+    .phase-complete { background: #22c55e33; color: var(--green); }
+    .phase-errored { background: #ef444433; color: var(--red); }
+
+    .controls {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 2rem;
+    }
+
+    button {
+      padding: 0.5rem 1rem;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+      font-size: 0.85rem;
+      transition: background 0.15s;
+    }
+
+    button:hover { background: var(--surface-hover); }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.primary { background: #2563eb; border-color: #2563eb; }
+    button.primary:hover { background: #1d4ed8; }
+    button.approve { background: #16a34a33; border-color: #16a34a; color: var(--green); }
+    button.skip { background: var(--surface); color: var(--text-muted); }
+
+    .screens { display: flex; flex-direction: column; gap: 1rem; }
+
+    .screen-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.2rem;
+    }
+
+    .screen-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.8rem;
+    }
+
+    .screen-name {
+      font-weight: 600;
+      font-size: 1rem;
+      font-family: monospace;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+      margin-right: 0.5rem;
+    }
+
+    .status-pending .status-dot { background: var(--text-muted); }
+    .status-analyzing .status-dot { background: var(--accent); animation: pulse 1s infinite; }
+    .status-analyzed .status-dot { background: var(--yellow); }
+    .status-hardening .status-dot { background: #a78bfa; animation: pulse 1s infinite; }
+    .status-hardened .status-dot { background: #818cf8; }
+    .status-verifying .status-dot { background: #818cf8; animation: pulse 1s infinite; }
+    .status-verified .status-dot { background: var(--green); }
+    .status-skipped .status-dot { background: var(--text-muted); }
+    .status-error .status-dot { background: var(--red); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    .findings { margin-top: 0.8rem; }
+
+    .finding {
+      padding: 0.6rem 0;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 1rem;
+    }
+
+    .finding-info { flex: 1; }
+    .finding-summary { font-size: 0.9rem; }
+    .finding-meta { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem; }
+
+    .severity-high { color: var(--red); }
+    .severity-medium { color: var(--orange); }
+    .severity-low { color: var(--yellow); }
+
+    .finding-actions { display: flex; gap: 0.3rem; flex-shrink: 0; }
+    .finding-actions button { font-size: 0.75rem; padding: 0.25rem 0.5rem; }
+
+    .decision-bar {
+      margin-top: 1rem;
+      padding-top: 0.8rem;
+      border-top: 1px solid var(--border);
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+    }
+
+    .ask-section {
+      margin-top: 0.8rem;
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .ask-section input {
+      flex: 1;
+      padding: 0.4rem 0.8rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 0.85rem;
+    }
+
+    .explanation-box {
+      margin-top: 0.6rem;
+      padding: 0.8rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-size: 0.85rem;
+      white-space: pre-wrap;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+
+    .error-text { color: var(--red); font-size: 0.85rem; margin-top: 0.5rem; }
+
+    .submit-bar {
+      position: sticky;
+      bottom: 0;
+      background: var(--bg);
+      padding: 1rem 0;
+      border-top: 1px solid var(--border);
+      margin-top: 1rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .decision-summary { font-size: 0.85rem; color: var(--text-muted); }
+
+    .verification-result {
+      margin-top: 0.8rem;
+      padding: 0.6rem;
+      border-radius: 4px;
+      font-size: 0.85rem;
+    }
+
+    .verification-accept { background: #22c55e1a; border: 1px solid #22c55e33; }
+    .verification-review { background: #f59e0b1a; border: 1px solid #f59e0b33; }
+    .verification-reject { background: #ef44441a; border: 1px solid #ef444433; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <script>
+    // ── State ─────────────────────────────────────────────────
+
+    let pipeline = { phase: 'idle', screens: {}, errors: [] };
+    let decisions = {};
+    let explanations = {};   // { "screen:finding_id": "text" }
+    let askAnswers = {};     // { "screen": "text" }
+    let loadingExplain = {}; // { "screen:finding_id": true }
+    let loadingAsk = {};     // { "screen": true }
+
+    // ── SSE Connection ────────────────────────────────────────
+
+    function connectSSE() {
+      const es = new EventSource('/events');
+      es.onmessage = (e) => {
+        pipeline = JSON.parse(e.data);
+        render();
+      };
+      es.onerror = () => {
+        setTimeout(connectSSE, 2000);
+      };
+    }
+
+    // ── API Calls ─────────────────────────────────────────────
+
+    async function startPipeline() {
+      await fetch('/pipeline/start', { method: 'POST' });
+    }
+
+    async function resetPipeline() {
+      decisions = {};
+      explanations = {};
+      askAnswers = {};
+      await fetch('/pipeline/reset', { method: 'POST' });
+    }
+
+    async function submitDecisions() {
+      await fetch('/decisions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(decisions)
+      });
+    }
+
+    async function explainFinding(screen, findingId) {
+      const key = `${screen}:${findingId}`;
+      loadingExplain[key] = true;
+      render();
+
+      const res = await fetch(`/screens/${screen}/explain/${findingId}`, { method: 'POST' });
+      const data = await res.json();
+      explanations[key] = data.explanation;
+      loadingExplain[key] = false;
+      render();
+    }
+
+    async function askQuestion(screen) {
+      const input = document.getElementById(`ask-${screen}`);
+      const question = input.value.trim();
+      if (!question) return;
+
+      loadingAsk[screen] = true;
+      render();
+
+      const res = await fetch(`/screens/${screen}/ask`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question })
+      });
+      const data = await res.json();
+      askAnswers[screen] = data.answer;
+      loadingAsk[screen] = false;
+      render();
+    }
+
+    async function retryScreen(screen) {
+      await fetch(`/pipeline/retry/${screen}`, { method: 'POST' });
+    }
+
+    function setDecision(screen, action, notes = '') {
+      decisions[screen] = { action, notes };
+      render();
+    }
+
+    // ── Rendering ─────────────────────────────────────────────
+
+    function render() {
+      const app = document.getElementById('app');
+      const screens = Object.values(pipeline.screens);
+      const phase = pipeline.phase;
+      const isDecisionPhase = phase === 'awaiting_decisions';
+
+      const analyzedCount = screens.filter(s => s.status === 'analyzed').length;
+      const decidedCount = Object.keys(decisions).length;
+
+      app.innerHTML = `
+        <header>
+          <h1>🛡 Harden Orchestrator</h1>
+          <span class="phase-badge phase-${phase}">${phase.replace('_', ' ')}</span>
+        </header>
+
+        <div class="controls">
+          <button class="primary" onclick="startPipeline()"
+            ${phase !== 'idle' ? 'disabled' : ''}>
+            Start Pipeline
+          </button>
+          <button onclick="resetPipeline()">Reset</button>
+        </div>
+
+        <div class="screens">
+          ${screens.map(s => renderScreen(s, isDecisionPhase)).join('')}
+        </div>
+
+        ${isDecisionPhase ? `
+          <div class="submit-bar">
+            <span class="decision-summary">
+              ${decidedCount} of ${analyzedCount} screens decided
+            </span>
+            <button class="primary" onclick="submitDecisions()"
+              ${decidedCount < analyzedCount ? 'disabled' : ''}>
+              Submit Decisions &amp; Harden
+            </button>
+          </div>
+        ` : ''}
+
+        ${pipeline.errors.length ? `
+          <div style="margin-top: 1rem;">
+            <h3 style="color: var(--red); margin-bottom: 0.5rem;">Errors</h3>
+            ${pipeline.errors.map(e => `
+              <div class="error-text">${e.at}: ${e.message}</div>
+            `).join('')}
+          </div>
+        ` : ''}
+      `;
+    }
+
+    function renderScreen(screen, isDecisionPhase) {
+      const findings = screen.analysis?.findings || [];
+      const decision = decisions[screen.name];
+      const verification = screen.verification;
+
+      return `
+        <div class="screen-card status-${screen.status}">
+          <div class="screen-header">
+            <span>
+              <span class="status-dot"></span>
+              <span class="screen-name">${screen.name}</span>
+            </span>
+            <span style="font-size: 0.8rem; color: var(--text-muted)">
+              ${screen.status}
+              ${screen.analysis?.overall_risk ? ` · risk: <span class="severity-${screen.analysis.overall_risk}">${screen.analysis.overall_risk}</span>` : ''}
+            </span>
+          </div>
+
+          ${screen.path ? `<div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.5rem;">${screen.path}</div>` : ''}
+
+          ${screen.error ? `<div class="error-text">${screen.error} <button onclick="retryScreen('${screen.name}')">Retry</button></div>` : ''}
+
+          ${findings.length ? `
+            <div class="findings">
+              ${findings.map(f => renderFinding(screen.name, f)).join('')}
+            </div>
+          ` : ''}
+
+          ${screen.analysis?.notes ? `<div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;">${screen.analysis.notes}</div>` : ''}
+
+          ${isDecisionPhase && screen.status === 'analyzed' ? renderDecisionBar(screen.name, decision) : ''}
+
+          ${screen.status === 'analyzed' || screen.status === 'hardened' || screen.status === 'verified' ? `
+            <div class="ask-section">
+              <input type="text" id="ask-${screen.name}" placeholder="Ask a question about this screen..."
+                onkeydown="if(event.key==='Enter') askQuestion('${screen.name}')" />
+              <button onclick="askQuestion('${screen.name}')" ${loadingAsk[screen.name] ? 'disabled' : ''}>
+                ${loadingAsk[screen.name] ? '...' : 'Ask'}
+              </button>
+            </div>
+            ${askAnswers[screen.name] ? `<div class="explanation-box">${escapeHtml(askAnswers[screen.name])}</div>` : ''}
+          ` : ''}
+
+          ${verification ? renderVerification(verification) : ''}
+
+          ${screen.hardened?.warnings?.length ? `
+            <div style="margin-top: 0.5rem;">
+              ${screen.hardened.warnings.map(w => `<div style="font-size: 0.8rem; color: var(--orange);">⚠ ${w}</div>`).join('')}
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }
+
+    function renderFinding(screenName, finding) {
+      const key = `${screenName}:${finding.id}`;
+      return `
+        <div class="finding">
+          <div class="finding-info">
+            <div class="finding-summary">
+              <span class="severity-${finding.severity}">[${finding.severity}]</span>
+              ${escapeHtml(finding.summary)}
+            </div>
+            <div class="finding-meta">
+              ${finding.category}${finding.action ? ` · #${finding.action}` : ''}
+            </div>
+          </div>
+          <div class="finding-actions">
+            <button onclick="explainFinding('${screenName}', '${finding.id}')"
+              ${loadingExplain[key] ? 'disabled' : ''}>
+              ${loadingExplain[key] ? '...' : 'Explain'}
+            </button>
+          </div>
+        </div>
+        ${explanations[key] ? `<div class="explanation-box">${escapeHtml(explanations[key])}</div>` : ''}
+      `;
+    }
+
+    function renderDecisionBar(screenName, decision) {
+      const current = decision?.action || null;
+      return `
+        <div class="decision-bar">
+          <span style="font-size: 0.85rem; margin-right: 0.5rem;">Decision:</span>
+          <button class="${current === 'approve' ? 'approve' : ''}"
+            onclick="setDecision('${screenName}', 'approve')">
+            ✓ Approve
+          </button>
+          <button class="${current === 'modify' ? 'primary' : ''}"
+            onclick="promptModify('${screenName}')">
+            ✎ Modify
+          </button>
+          <button class="${current === 'skip' ? 'skip' : ''}"
+            onclick="setDecision('${screenName}', 'skip')">
+            ✗ Skip
+          </button>
+          ${current ? `<span style="font-size: 0.8rem; color: var(--green); margin-left: 0.5rem;">→ ${current}</span>` : ''}
+        </div>
+      `;
+    }
+
+    function renderVerification(v) {
+      const rec = v.recommendation || 'review';
+      return `
+        <div class="verification-result verification-${rec}">
+          <strong>Verification: ${rec}</strong>
+          ${v.notes ? `<div style="margin-top: 0.3rem; font-size: 0.8rem;">${escapeHtml(v.notes)}</div>` : ''}
+          ${v.new_issues?.length ? `<div style="margin-top: 0.3rem; color: var(--red); font-size: 0.8rem;">New issues found: ${v.new_issues.length}</div>` : ''}
+        </div>
+      `;
+    }
+
+    function promptModify(screenName) {
+      const notes = prompt('Modification instructions:');
+      if (notes !== null) {
+        setDecision(screenName, 'modify', notes);
+      }
+    }
+
+    function escapeHtml(str) {
+      if (typeof str !== 'string') str = JSON.stringify(str, null, 2);
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    // ── Boot ──────────────────────────────────────────────────
+
+    connectSSE();
+    render();
+  </script>
+</body>
+</html>
