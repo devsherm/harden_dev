@@ -1,130 +1,167 @@
-# Blog Application Layer -- Spec
+# Blog Application Spec
+
+## Glossary
+
+- **Post**: A blog article authored by a single person. Stored in `blog_posts`.
+- **Comment**: A reader response attached to exactly one Post. Stored in `blog_comments`.
+- **Author**: A free-text string identifying who wrote a Post or Comment. Not an authenticated user — just a name.
+- **Topic**: A free-text category label on a Post (e.g., "Rails", "Design"). Optional.
+- **Liked by Author**: A string column on a Comment (`liked_by_author`). Currently a free-text input with no application-level behavior — the value is whatever the user types.
 
 ## Intent
 
-The `app/` directory contains the Rails application layer for a namespaced blog system. It provides full CRUD for two resources -- posts and comments -- under a `Blog` namespace, with both HTML and JSON response formats. The application serves as a sandbox for Claude-assisted Rails development workflows, built on Rails 8 conventions with Hotwire, Propshaft, and importmap-based JavaScript.
+A minimal multi-page blog where visitors can read posts, create new posts, and leave comments on existing posts. The application serves as a straightforward CRUD exercise — no authentication, no rich text, no media uploads.
 
-## Terminology
+## Domain Rules
 
-- **Blog namespace**: The `Blog` module that scopes all domain models and controllers. Defines a `table_name_prefix` of `"blog_"` so that database tables are named `blog_posts` and `blog_comments`.
-- **Post** (`Blog::Post`): A blog post with `title`, `body`, `topic`, and `author` attributes. The primary content entity.
-- **Comment** (`Blog::Comment`): A comment on a post with `body`, `author`, `liked_by_author`, and `post_id` attributes. Always belongs to a post via foreign key.
-- **Scaffold CRUD**: The standard Rails scaffold pattern providing `index`, `show`, `new`, `edit`, `create`, `update`, and `destroy` actions with both HTML and JSON response formats.
-- **Strong params**: Parameter filtering via Rails 8's `params.expect()` method (not the older `params.require().permit()` pattern).
+- A Post has a **title**, **body**, **author**, and optional **topic**.
+- A Comment has an **author**, **body**, and belongs to exactly one Post (enforced by a foreign key constraint).
+- A Comment has a `liked_by_author` string field with no application-level behavior — it is a free-text input.
+- Deleting a Post that has Comments raises `ActiveRecord::InvalidForeignKey` — there is no cascading delete.
+- Posts and Comments are publicly readable with no access control.
 
-## Architecture
+## Technical Constraints
 
-The application follows standard Rails MVC with a single level of namespacing under `Blog`.
+### Models
 
-### Request Flow
+- `Blog::Post` has no validations. `Blog::Post.new.valid?` returns `true`.
+- `Blog::Post` has no associations — it does not declare `has_many :comments`.
+- `Blog::Comment` has no explicit validations. The only validation is the implicit `belongs_to :post` presence check (Rails default `optional: false`).
+- `Blog::Comment` belongs to a Post (`belongs_to :post`).
+- The foreign key from `blog_comments.post_id` to `blog_posts.id` is enforced at the database level.
 
-All requests pass through `ApplicationController`, which enforces modern browser requirements via `allow_browser versions: :modern` and invalidates ETags when the importmap changes via `stale_when_importmap_changes`. Both `Blog::PostsController` and `Blog::CommentsController` inherit from `ApplicationController`.
+### Controllers
 
-### Dual-Format Responses
+- `Blog::PostsController` provides standard CRUD actions: index, show, new, create, edit, update, destroy.
+- `Blog::CommentsController` provides standard CRUD actions: index, show, new, create, edit, update, destroy. The show action renders a single Comment with "Edit this comment", "Back to comments", and "Destroy this comment" controls.
+- There is no `toggle_like` action — the `liked_by_author` field is edited only via the standard Comment form.
+- Both controllers use `params.expect()` for strong parameters.
+- Since `Blog::Post` has no validations, creating or updating a Post always succeeds (the create-failure and update-failure code paths in the controller are unreachable).
+- Creating a Comment with a missing `post_id` fails the `belongs_to :post` validation (HTTP 422) and re-renders the new Comment form.
+- Updating a Comment with invalid params returns validation errors (HTTP 422) and re-renders the edit form with error summary.
 
-Every CRUD action responds to both HTML and JSON formats:
+### Routes
 
-| Action | HTML response | JSON response |
-|--------|--------------|---------------|
-| `index` | Renders ERB template iterating over collection | Jbuilder array via partial |
-| `show` | Renders ERB template with single record partial | Jbuilder single record via partial |
-| `new` | Renders form partial | N/A |
-| `edit` | Renders form partial | N/A |
-| `create` (success) | Redirects to show with flash notice | Renders show, status 201 |
-| `create` (failure) | Re-renders `new`, status 422 | Renders errors JSON, status 422 |
-| `update` (success) | Redirects to show with flash notice, status 303 | Renders show, status 200 |
-| `update` (failure) | Re-renders `edit`, status 422 | Renders errors JSON, status 422 |
-| `destroy` | Redirects to index with flash notice, status 303 | Head 204 no content |
+- Posts are accessible under `namespace :blog` at `/blog/posts`.
+- Comments are accessible under `namespace :blog` at `/blog/comments` (flat routes for all seven CRUD actions including show).
+- There are no nested routes — Comments are not routed under Posts.
+- There are no custom routes — no `toggle_like` or other non-CRUD actions.
+- There is no root route. `GET /` returns a routing error. The `root "posts#index"` line is commented out in `routes.rb`.
 
-### Model Relationships
+### Views
 
-`Blog::Comment` declares `belongs_to :post`, establishing a required association to `Blog::Post`. The database enforces this with a foreign key constraint (`add_foreign_key "blog_comments", "posts"`) and an index on `post_id`. `Blog::Post` does not declare a `has_many :comments` association.
+All views use ERB templates with partials for reuse. JSON representations are available via jbuilder templates.
 
-### No Model Validations
+#### Layout and Navigation
 
-Neither `Blog::Post` nor `Blog::Comment` defines application-level validations. The only enforcement is the database-level `NOT NULL` constraint on `blog_comments.post_id` (inherited from the `belongs_to` association's implicit `optional: false` default in Rails 8).
+- The application layout has no persistent header or navigation element. The `<body>` contains only `<%= yield %>`.
+- There is no consistent "Back to posts" navigation pattern across pages. Individual pages include their own navigation links (see Post Show, Comment Show, Comment Edit below).
 
-### JavaScript
+#### Post Index (`/blog/posts`)
 
-The client-side stack uses Hotwire (Turbo + Stimulus) loaded via importmap. A Stimulus `Application` instance is initialized in `controllers/application.js` with `debug: false`. Controllers are eager-loaded from the `controllers/` directory. A sample `hello_controller.js` exists that sets `textContent` to `"Hello World!"` on connect -- this is a Rails scaffold artifact, not application functionality.
+- Displays all Posts via `Blog::Post.all` with no ordering — records appear in database insertion order.
+- Each Post in the list renders via the `_post` partial showing **title**, **body**, **topic**, and **author** as labeled text fields. Titles are not linked to the Post show page — a separate "Show this post" link appears below each Post.
+- A "New post" link appears below the list, linking to the new Post form.
+- There is no empty state — when no Posts exist, the page displays only the heading "Posts" and the "New post" link.
 
-### Asset Pipeline
+#### Post Show (`/blog/posts/:id`)
 
-Propshaft serves assets without preprocessing. The `application.css` manifest file is present but contains only comments -- no application-specific styles are defined.
+- Displays the Post via the `_post` partial: **title**, **body**, **topic**, and **author** as labeled text. No **created_at** timestamp is shown.
+- Below the Post, an "Edit this post" link, a "Back to posts" link, and a "Destroy this post" button are displayed.
+- There is no Comments section — the Post show page does not display, list, or reference Comments in any way.
+- There is no inline Comment form.
 
-## Code Organization
+#### Liked by Author
 
-| Path | Description |
-|------|-------------|
-| `controllers/application_controller.rb` | Base controller enforcing modern browser gate and importmap ETag invalidation |
-| `controllers/blog/posts_controller.rb` | Full CRUD for `Blog::Post` with `before_action :set_blog_post` on member actions |
-| `controllers/blog/comments_controller.rb` | Full CRUD for `Blog::Comment` with `before_action :set_blog_comment` on member actions |
-| `models/blog.rb` | Module defining `table_name_prefix "blog_"` |
-| `models/blog/post.rb` | `Blog::Post < ApplicationRecord` -- no validations, no associations beyond table defaults |
-| `models/blog/comment.rb` | `Blog::Comment < ApplicationRecord` with `belongs_to :post` |
-| `models/application_record.rb` | Abstract base class (`primary_abstract_class`) |
-| `views/blog/posts/` | ERB templates and jbuilder partials for posts CRUD |
-| `views/blog/comments/` | ERB templates and jbuilder partials for comments CRUD |
-| `views/layouts/application.html.erb` | Main HTML layout with Propshaft stylesheets and importmap tags |
-| `views/layouts/mailer.html.erb` | HTML email layout (default scaffold) |
-| `views/layouts/mailer.text.erb` | Plain text email layout (yields only) |
-| `views/pwa/manifest.json.erb` | PWA manifest for "HardenDev" (not linked from layout) |
-| `views/pwa/service-worker.js` | Commented-out service worker stub (no active functionality) |
-| `javascript/application.js` | Entry point importing Turbo and Stimulus controllers |
-| `javascript/controllers/application.js` | Stimulus Application setup (`debug: false`) |
-| `javascript/controllers/index.js` | Eager-loads all Stimulus controllers |
-| `javascript/controllers/hello_controller.js` | Scaffold sample controller (not used by application) |
-| `assets/stylesheets/application.css` | Empty CSS manifest (comments only) |
-| `helpers/application_helper.rb` | Empty helper module |
-| `helpers/blog/posts_helper.rb` | Empty helper module |
-| `helpers/blog/comments_helper.rb` | Empty helper module |
-| `jobs/application_job.rb` | Base job class (scaffold default, no custom jobs) |
-| `mailers/application_mailer.rb` | Base mailer with `from: "from@example.com"` (scaffold default, no custom mailers) |
+- The `liked_by_author` field exists on the Comment model as a string column.
+- The Comment form renders it as a plain text input labeled "Liked by author". The user can type any value.
+- There is no toggle button, no Like/Unlike behavior, and no visual indicator. The field behaves identically to the author or body fields.
+- The value is displayed as-is in the Comment partial: `<strong>Liked by author:</strong> {value}`.
 
-## View Layer Details
+#### Post Form (New / Edit)
 
-### Posts Views
+- The new Post form is at `/blog/posts/new`. The edit Post form is at `/blog/posts/:id/edit`.
+- Both forms contain: **title** (text input), **body** (textarea), **topic** (text input), **author** (text input).
+- The submit button uses Rails-default labeling: "Create Post" on the new form and "Update Post" on the edit form.
+- On successful create, the user is redirected to the new Post's show page with a flash notice: "Post was successfully created."
+- On successful update, the user is redirected to the Post's show page with a flash notice: "Post was successfully updated."
+- On successful destroy, the user is redirected to the Post index with a flash notice: "Post was successfully destroyed."
 
-The post form (`_form.html.erb`) uses `form_with(model: blog_post)` and exposes four fields: `title` (text field), `body` (textarea), `topic` (text field), `author` (text field). Error display renders inline with `style="color: red"` using `pluralize` for the error count header.
+#### Comment Form (New / Edit)
 
-The post partial (`_post.html.erb`) renders a `div` with `dom_id(post)` displaying title, body, topic, and author as labeled fields.
+- The standalone new Comment form at `/blog/comments/new` and edit at `/blog/comments/:id/edit` are the only paths for creating and editing Comments. There is no inline form on the Post show page.
+- Both forms contain: **post_id** (text input — raw ID, not a dropdown), **body** (textarea), **author** (text input), and **liked_by_author** (text input).
+- The Comment edit page includes a "Show this comment" link and a "Back to comments" link pointing to the Comments index.
+- On successful Comment create, the user is redirected to the Comment's show page with a flash notice: "Comment was successfully created."
+- On successful Comment update, the user is redirected to the Comment's show page with a flash notice: "Comment was successfully updated."
+- On successful Comment destroy, the user is redirected to the Comments index with a flash notice: "Comment was successfully destroyed."
 
-The JSON partial (`_blog_post.json.jbuilder`) extracts `id`, `title`, `body`, `topic`, `author`, `created_at`, `updated_at`, plus a `url` field pointing to the JSON show endpoint.
+#### Validation Error Display
 
-### Comments Views
+- The form templates include error display blocks using `style="color: red"` with a `pluralize`-based header ("X error(s) prohibited this blog_post from being saved").
+- The error summary lists each validation error as a bullet point.
+- Fields with errors are visually distinguished — wrapped in a `div.field_with_errors` so the user can see which fields need attention.
+- Since `Blog::Post` has no validations, the Post form error display block is never triggered. Comment form errors trigger only when the `post` association is missing.
 
-The comment form (`_form.html.erb`) uses `form_with(model: blog_comment)` and exposes four fields: `post_id` (text field), `body` (textarea), `author` (text field), `liked_by_author` (text field). Error display follows the same pattern as posts.
+#### Styling
 
-The comment partial (`_comment.html.erb`) renders a `div` with `dom_id(comment)` displaying post_id, body, author, and liked_by_author as labeled fields.
+- The application uses the Rails default stylesheet. No custom CSS framework is required.
+- Visual polish is a non-goal — functional clarity and correct HTML semantics take priority over aesthetics.
 
-The JSON partial (`_blog_comment.json.jbuilder`) extracts `id`, `post_id`, `body`, `author`, `liked_by_author`, `created_at`, `updated_at`, plus a `url` field pointing to the JSON show endpoint.
+### Seed Data
 
-### Layout
-
-The application layout sets a dynamic title via `content_for(:title)` falling back to `"Harden Dev"`. It includes CSRF meta tags, CSP meta tag, a head yield block, Propshaft stylesheet tag (`:app`), and importmap JavaScript tags. PWA manifest link is commented out. Icons reference `/icon.png` and `/icon.svg`.
-
-## Design Decisions
-
-- **Namespace isolation via `table_name_prefix`**: The `Blog` module defines `table_name_prefix "blog_"` rather than using STI or a separate database. This keeps all blog tables in the same SQLite database with a consistent `blog_` prefix, matching the namespace convention.
-- **No root route**: The application does not define a root route. The `root "posts#index"` line exists as a comment in `routes.rb` but is not active.
-- **PWA disabled**: The PWA manifest route and service worker route are both commented out in `routes.rb`. The manifest link is commented out in the layout. The PWA files exist as scaffolded stubs only.
-- **No model validations**: Both models are deliberately bare -- no presence, format, or custom validations. The only constraint enforcement is at the database level (foreign key, NOT NULL on `post_id`).
-- **No `has_many` inverse**: `Blog::Post` does not declare `has_many :comments`. Only the `belongs_to` side of the association exists on `Blog::Comment`. This means there is no direct `post.comments` query path from a post instance.
-- **`liked_by_author` stored as string**: The `liked_by_author` column on `blog_comments` is a `string` type rather than `boolean`. The form renders it as a text field. No type coercion or boolean casting is applied.
-- **Comments use `post_id` text field**: The comment form exposes `post_id` as a raw text input rather than a select/dropdown of existing posts. This is the default scaffold behavior.
-- **Strong params via `params.expect()`**: Both controllers use the Rails 8 `params.expect()` pattern for strong parameters rather than the older `params.require().permit()` chain.
-- **`destroy!` with bang**: Both controllers call `destroy!` (raising on failure) rather than `destroy` (returning false). Any destroy failure raises an exception rather than being handled gracefully.
-- **Record lookup via `params.expect(:id)`**: The `set_blog_post` and `set_blog_comment` callbacks use `params.expect(:id)` for type-safe parameter extraction. An invalid or missing `id` raises `ActionController::ParameterMissing`.
-- **Flash notices via redirect options**: Success messages ("Post was successfully created.", etc.) are passed as `notice:` keyword arguments to `redirect_to`, not set via `flash[:notice]` separately.
-- **All helpers empty**: The three helper modules (`ApplicationHelper`, `Blog::PostsHelper`, `Blog::CommentsHelper`) are defined but contain no methods. View logic is inline in ERB templates.
-- **Inline styles for error display**: Form validation errors use `style="color: red"` directly in the ERB markup rather than CSS classes. This is standard scaffold output.
-- **Turbo Drive active by default**: No `data-turbo="false"` attributes are set. All navigation and form submissions go through Turbo Drive. The delete buttons use `button_to` with `method: :delete`, which Turbo handles natively.
+- No seed data is defined. `db/seeds.rb` contains only comments — no records are created.
 
 ## Non-Goals
 
-- **Authentication and authorization**: No user accounts, sessions, or access control. All actions are publicly accessible.
-- **Custom styling or UI framework**: No CSS framework, no custom stylesheets. Views use scaffold-generated markup with inline styles.
-- **API-only mode**: The application serves both HTML and JSON but is not configured as `ActionController::API`. Full browser support (CSRF, cookies, sessions) is active.
-- **Background jobs or mailers**: The `ApplicationJob` and `ApplicationMailer` base classes exist as scaffolds but no concrete jobs or mailers are implemented.
-- **Search, pagination, or filtering**: Collection endpoints (`index`) load all records via `.all` with no scoping, pagination, or search.
-- **Nested routes**: Comments are not nested under posts in routing. Both resources are top-level within the `blog` namespace (`/blog/comments`, `/blog/posts`).
+- **Authentication / Authorization**: There are no user accounts, sessions, or permission checks.
+- **Rich text or media**: Bodies are plain text. No Action Text, no image uploads.
+- **Pagination**: Not required. The dataset is assumed to be small.
+- **Search or filtering**: No search bar, no topic-based filtering.
+- **API versioning**: The JSON endpoints are not versioned.
+- **Email or notifications**: No mailers, no Action Cable broadcasts.
+- **Comment nesting**: Comments are flat — no replies to other Comments.
+
+## Testability Hooks
+
+### Model Assertions
+
+| Assertion | How to verify |
+|---|---|
+| Post has no validations | `Blog::Post.new.valid?` returns `true` |
+| Post has no `has_many` association | `Blog::Post.new.respond_to?(:comments)` returns `false` |
+| Deleting a Post with Comments raises FK error | `post.destroy!` raises `ActiveRecord::InvalidForeignKey` when the Post has Comments |
+| Comment belongs to Post | `Blog::Comment.new(author: "a", body: "x").valid?` returns `false` with error on `post` |
+
+### Route and Controller Assertions
+
+| Assertion | How to verify |
+|---|---|
+| GET /blog/posts returns 200 | Integration test confirms success |
+| GET /blog/posts/:id returns 200 | Integration test confirms success for an existing Post |
+| GET /blog/comments/:id returns 200 | Integration test confirms success for an existing Comment (show action exists) |
+| GET /blog/posts.json returns JSON array | Response content type is `application/json` |
+| Root path returns routing error | `GET /` returns `ActionController::RoutingError` — no root route is defined |
+| POST /blog/posts with valid params redirects to Post show | Integration test confirms 302 redirect to the new Post's show page |
+| POST /blog/comments with valid params redirects to Comment show | Integration test confirms 302 redirect to the new Comment's show page (not the parent Post) |
+| DELETE /blog/comments/:id redirects to Comments index | Integration test confirms redirect to `/blog/comments` with flash "Comment was successfully destroyed." |
+
+### UX Assertions
+
+| Assertion | How to verify |
+|---|---|
+| Post index has no ordering guarantee | Posts appear in database insertion order; no `order` clause is applied |
+| Post index has no empty state | With no Posts, the index page shows only "Posts" heading and "New post" link — no "No posts yet." message |
+| Post index does not link titles to show pages | Each Post's title appears as plain text; a separate "Show this post" link provides navigation |
+| Post index displays "New post" link below the list | System test: index page contains a link with text "New post" pointing to `/blog/posts/new`, rendered after the post list |
+| Post show has no Comments section | System test: Post show page contains no "Comments" heading, no Comment list, and no inline Comment form |
+| Post show has "Back to posts" link | System test: Post show page contains a "Back to posts" link whose `href` matches the Post index path |
+| Post show displays edit and delete actions | System test: show page contains an "Edit this post" link and a "Destroy this post" button |
+| No navigation header | System test: the layout `<body>` contains no persistent header or "Blog" link |
+| `liked_by_author` is a plain text input | System test: the Comment form contains a text input labeled "Liked by author" with no toggle behavior |
+| Comment edit page links to Comments index | System test: Comment edit page contains a "Back to comments" link whose `href` matches the Comments index path |
+| Flash notice appears after Post create | System test: creating a Post shows "Post was successfully created." |
+| Flash notice appears after Post update | System test: updating a Post shows "Post was successfully updated." |
+| Flash notice appears after Post destroy | System test: destroying a Post redirects to index with "Post was successfully destroyed." |
+| Flash notice appears after Comment create | System test: creating a Comment shows "Comment was successfully created." and redirects to Comment show |
+| Seed data is empty | After `rails db:seed`, `Blog::Post.count` is `0` and `Blog::Comment.count` is `0` |

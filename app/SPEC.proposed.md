@@ -6,7 +6,7 @@
 - **Comment**: A reader response attached to exactly one Post. Stored in `blog_comments`.
 - **Author**: A free-text string identifying who wrote a Post or Comment. Not an authenticated user — just a name.
 - **Topic**: A free-text category label on a Post (e.g., "Rails", "Design"). Optional.
-- **Liked by Author**: A flag on a Comment indicating the Post's author has endorsed it. Stored as a string field.
+- **Liked by Author**: A flag on a Comment indicating the Post's author has endorsed it. When set, contains the Post author's name.
 
 ## Intent
 
@@ -56,12 +56,12 @@ All views use ERB templates with partials for reuse. JSON representations are av
 #### Layout and Navigation
 
 - The application layout includes a persistent header with the application name ("Blog") linked to the root path.
-- Every page below the header includes a breadcrumb or "Back to posts" link so the user can always return to the index in one click.
+- Every page below the header includes a "Back to posts" link so the user can always return to the index in one click.
 
 #### Post Index (`/blog/posts`)
 
 - Displays all Posts ordered by **created_at descending** (newest first).
-- Each Post in the list renders as a card or row showing **title** (linked to the Post show page), **author**, and **topic** (if present). If topic is blank, no topic label is rendered — no "N/A" or placeholder.
+- Each Post in the list shows **title** (linked to the Post show page), **author**, and **topic** (if present). If topic is blank, no topic label is rendered — no "N/A" or placeholder.
 - A "New post" link appears above the list, linking to the new Post form.
 - **Empty state**: When no Posts exist, the page displays the text "No posts yet." followed by the "New post" link.
 
@@ -78,9 +78,9 @@ All views use ERB templates with partials for reuse. JSON representations are av
 
 #### Liked by Author
 
-- On the Post show page, each Comment displays a "Like" or "Unlike" toggle link (or button) that submits a `PATCH` request to `/blog/comments/:id/toggle_like`.
+- On the Post show page, each Comment displays a "Like" or "Unlike" toggle button that submits a `PATCH` request to `/blog/comments/:id/toggle_like`.
 - When a Comment's `liked_by_author` field is blank or empty, the toggle reads "Like" and submitting it sets the field to the Post author's name.
-- When a Comment's `liked_by_author` field is populated, the toggle reads "Unlike" and submitting it clears the field. The Comment also displays a visual indicator (e.g., the text "Liked by {author name}") next to or below the Comment body.
+- When a Comment's `liked_by_author` field is populated, the toggle reads "Unlike" and submitting it clears the field. The Comment also displays the text "Liked by {author name}" below the Comment body.
 - After toggling, the user is redirected back to the parent Post's show page.
 - Since there is no authentication, the toggle is available to any visitor — this is intentional and consistent with the no-auth design.
 
@@ -88,7 +88,7 @@ All views use ERB templates with partials for reuse. JSON representations are av
 
 - The new Post form is at `/blog/posts/new`. The edit Post form is at `/blog/posts/:id/edit`.
 - Both forms contain: **title** (text input), **body** (textarea), **author** (text input), and **topic** (text input).
-- A "Save" or "Create post" / "Update post" submit button appears below the fields.
+- A "Create post" submit button appears on the new form and "Update post" on the edit form.
 - On successful create, the user is redirected to the new Post's show page with a flash notice: "Post was successfully created."
 - On successful update, the user is redirected to the Post's show page with a flash notice: "Post was successfully updated."
 - On successful destroy, the user is redirected to the Post index with a flash notice: "Post was successfully destroyed."
@@ -97,7 +97,7 @@ All views use ERB templates with partials for reuse. JSON representations are av
 
 - The primary path for creating a Comment is the inline form on the Post show page (described above).
 - A standalone new Comment form exists at `/blog/comments/new` and edit at `/blog/comments/:id/edit`, consistent with the resourceful routes, but these are secondary paths.
-- The Comment edit page includes a "Back to post" or "Cancel" link pointing to the parent Post's show page.
+- The Comment edit page includes a "Back to post" link pointing to the parent Post's show page.
 - On successful Comment create, the user is redirected back to the parent Post's show page with a flash notice: "Comment was successfully created."
 - On successful Comment update, the user is redirected back to the parent Post's show page with a flash notice: "Comment was successfully updated."
 - On successful Comment destroy, the user is redirected back to the parent Post's show page with a flash notice: "Comment was successfully destroyed."
@@ -106,7 +106,7 @@ All views use ERB templates with partials for reuse. JSON representations are av
 
 - When a form submission fails validation, the form is re-rendered (HTTP 422) with an error summary at the top of the form.
 - The error summary lists each validation error as a bullet point (e.g., "Title can't be blank").
-- Fields with errors are visually distinguished — wrapped in a `div.field_with_errors` (Rails default) or equivalent styling so the user can see which fields need attention.
+- Fields with errors are visually distinguished — wrapped in a `div.field_with_errors` so the user can see which fields need attention.
 
 #### Styling
 
@@ -156,6 +156,7 @@ All views use ERB templates with partials for reuse. JSON representations are av
 | GET /blog/posts/:id returns 200 | Integration test confirms success for an existing Post |
 | GET /blog/posts.json returns JSON array | Response content type is `application/json` |
 | Root path redirects to Post index | `GET /` returns 302 redirect to `/blog/posts` |
+| Comment delete redirects to parent Post show | Integration test: `DELETE /blog/comments/:id` redirects to the parent Post's show page with flash "Comment was successfully destroyed." |
 
 ### UX Assertions
 
@@ -178,5 +179,7 @@ All views use ERB templates with partials for reuse. JSON representations are av
 | Validation errors display on failed Post create | System test: submitting a Post with blank title shows error summary containing "Title can't be blank" |
 | Validation errors display on failed Post update | System test: editing a Post and blanking the title shows error summary containing "Title can't be blank" |
 | Validation errors display on failed Comment create | System test: submitting inline Comment with blank body on Post show page shows error summary containing "Body can't be blank" |
-| Comment edit page links back to parent Post | System test: Comment edit page contains a "Back to post" or "Cancel" link whose `href` matches the parent Post's show path |
+| Comment edit page links back to parent Post | System test: Comment edit page contains a "Back to post" link whose `href` matches the parent Post's show path |
+| Post show page has "Back to posts" link | System test: Post show page contains a "Back to posts" link whose `href` matches the Post index path |
 | Navigation header links to root | System test: every page contains a header link with text "Blog" pointing to the root path |
+| Seed data populates Posts and Comments | After `rails db:seed`, `Blog::Post.count > 0` and `Blog::Comment.count > 0` |
