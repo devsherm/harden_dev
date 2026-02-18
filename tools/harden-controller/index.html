@@ -246,6 +246,12 @@
       await fetch('/pipeline/start', { method: 'POST' });
     }
 
+    async function shutdownServer() {
+      if (!confirm('Shut down the server?')) return;
+      await fetch('/shutdown', { method: 'POST' });
+      document.getElementById('app').innerHTML = '<h2 style="margin-top:2rem;color:var(--text-muted)">Server stopped.</h2>';
+    }
+
     async function resetPipeline() {
       decisions = {};
       explanations = {};
@@ -324,6 +330,7 @@
             Start Pipeline
           </button>
           <button onclick="resetPipeline()">Reset</button>
+          <button onclick="shutdownServer()" style="margin-left:auto;color:var(--red);border-color:var(--red)">Shutdown</button>
         </div>
 
         <div class="screens">

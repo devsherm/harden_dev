@@ -8,6 +8,7 @@ require_relative "pipeline"
 set :port, 4567
 set :bind, "0.0.0.0"
 set :server, :puma
+set :server_settings, { force_shutdown_after: 3 }
 
 # Rails root defaults to current directory (run from within your Rails project)
 RAILS_ROOT = ENV.fetch("RAILS_ROOT", ".")
@@ -123,4 +124,12 @@ post "/pipeline/retry/:screen" do
   content_type :json
   result = $pipeline.retry_screen(params[:screen])
   result.to_json
+end
+
+# ── Shutdown ──────────────────────────────────────────────
+
+post "/shutdown" do
+  content_type :json
+  Thread.new { sleep 0.5; exit! }
+  { status: "shutting_down" }.to_json
 end
