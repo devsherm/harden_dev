@@ -38,6 +38,7 @@ module Prompts
             "id": "finding_001",
             "severity": "high|medium|low",
             "category": "authorization|validation|params|rate_limiting|csrf|redirect|info_leak|other",
+            "scope": "controller (fix is localized to this file) | module (fix spans namespace — models, views, controllers) | app (requires app-wide changes, e.g. adding an auth system)",
             "action": "action_name or null if controller-wide",
             "summary": "Brief one-line description",
             "detail": "Detailed explanation of the issue",

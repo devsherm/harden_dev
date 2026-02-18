@@ -15,6 +15,9 @@ RAILS_ROOT = ENV.fetch("RAILS_ROOT", ".")
 
 $pipeline = Pipeline.new(rails_root: RAILS_ROOT)
 
+# Auto-discover controllers at startup so selection is the opening screen
+Thread.new { $pipeline.discover_controllers }
+
 # ── CORS (for local dev if frontend runs separately) ────────
 
 before do
@@ -35,34 +38,42 @@ end
 
 # ── Pipeline Control ─────────────────────────────────────────
 
-# Start the pipeline (discover controllers, then pause for selection)
-post "/pipeline/start" do
-  content_type :json
-  halt 409, { error: "Pipeline already running" }.to_json unless $pipeline.state[:phase] == "idle"
-
-  Thread.new { $pipeline.discover_controllers }
-
-  { status: "started", phase: "discovering" }.to_json
-end
-
-# Analyze selected controllers
+# Analyze a single selected controller
 post "/pipeline/analyze" do
   content_type :json
   halt 409, { error: "Not in selection phase" }.to_json unless $pipeline.state[:phase] == "awaiting_selection"
 
   body = JSON.parse(request.body.read)
-  controllers = body["controllers"]
-  halt 400, { error: "No controllers specified" }.to_json if controllers.nil? || controllers.empty?
+  controller = body["controller"]
+  halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
-  Thread.new { $pipeline.select_controllers(controllers) }
+  Thread.new { $pipeline.select_controllers([controller]) }
 
   { status: "analyzing", phase: "analyzing" }.to_json
 end
 
-# Reset pipeline (for re-running)
+# Load existing analysis from sidecar file (skip re-running claude)
+post "/pipeline/load-analysis" do
+  content_type :json
+  halt 409, { error: "Not in selection phase" }.to_json unless $pipeline.state[:phase] == "awaiting_selection"
+
+  body = JSON.parse(request.body.read)
+  controller = body["controller"]
+  halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
+
+  begin
+    $pipeline.load_existing_analysis(controller)
+    { status: "loaded", phase: "awaiting_decisions" }.to_json
+  rescue => e
+    halt 422, { error: e.message }.to_json
+  end
+end
+
+# Reset pipeline (re-discovers controllers)
 post "/pipeline/reset" do
   content_type :json
   $pipeline = Pipeline.new(rails_root: RAILS_ROOT)
+  Thread.new { $pipeline.discover_controllers }
   { status: "reset" }.to_json
 end
 

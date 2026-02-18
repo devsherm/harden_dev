@@ -37,6 +37,9 @@ class Pipeline
       next if basename == "application_controller"
 
       relative = path.sub("#{@rails_root}/", "")
+      analysis_file = sidecar_path(path, "analysis.json")
+      has_existing = File.exist?(analysis_file)
+
       @mutex.synchronize do
         @state[:screens][basename] = {
           name: basename,
@@ -47,7 +50,8 @@ class Pipeline
           decision: nil,
           hardened: nil,
           verification: nil,
-          error: nil
+          error: nil,
+          existing_analysis_at: has_existing ? File.mtime(analysis_file).iso8601 : nil
         }
       end
     end
@@ -62,6 +66,23 @@ class Pipeline
       @state[:screens].keep_if { |name, _| names.include?(name) }
     end
     run_analysis
+  end
+
+  def load_existing_analysis(name)
+    screen = screens[name]
+    raise "Screen not found: #{name}" unless screen
+
+    analysis_file = sidecar_path(screen[:full_path], "analysis.json")
+    raise "No existing analysis for #{name}" unless File.exist?(analysis_file)
+
+    @mutex.synchronize do
+      @state[:screens].keep_if { |n, _| n == name }
+    end
+
+    raw = File.read(analysis_file)
+    parsed = parse_json_response(raw)
+    update_screen(name, status: "analyzed", analysis: parsed)
+    update_phase("awaiting_decisions")
   end
 
   # ── Phase 1: Parallel Analysis ─────────────────────────────

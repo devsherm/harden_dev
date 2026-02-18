@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Harden Orchestrator</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
     :root {
       --bg: #0f1117;
@@ -147,16 +148,95 @@
     .severity-medium { color: var(--orange); }
     .severity-low { color: var(--yellow); }
 
-    .finding-actions { display: flex; gap: 0.3rem; flex-shrink: 0; }
+    .finding-actions { display: flex; gap: 0.3rem; flex-shrink: 0; align-items: center; }
     .finding-actions button { font-size: 0.75rem; padding: 0.25rem 0.5rem; }
 
-    .decision-bar {
-      margin-top: 1rem;
-      padding-top: 0.8rem;
-      border-top: 1px solid var(--border);
+    .finding-toggle {
+      width: 26px;
+      height: 26px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 0.8rem;
+      padding: 0;
       display: flex;
-      gap: 0.5rem;
       align-items: center;
+      justify-content: center;
+      transition: all 0.15s;
+    }
+
+    .finding-toggle.approved {
+      background: #16a34a33;
+      border-color: #16a34a;
+      color: var(--green);
+    }
+
+    .finding-toggle.skipped {
+      background: #ef444422;
+      border-color: #ef444466;
+      color: var(--red);
+      text-decoration: line-through;
+    }
+
+    .finding.is-skipped .finding-info { opacity: 0.45; }
+
+    .plan-dropdown {
+      position: relative;
+      display: inline-block;
+    }
+
+    .plan-menu {
+      display: none;
+      position: absolute;
+      right: 0;
+      top: 100%;
+      margin-top: 2px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      min-width: 120px;
+      z-index: 10;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    }
+
+    .plan-dropdown.open .plan-menu { display: block; }
+
+    .plan-menu button {
+      display: block;
+      width: 100%;
+      text-align: left;
+      border: none;
+      border-radius: 0;
+      padding: 0.4rem 0.7rem;
+      font-size: 0.75rem;
+      background: transparent;
+      color: var(--text);
+    }
+
+    .plan-menu button:hover { background: var(--surface-hover); }
+    .plan-menu button.recommended { color: var(--accent); font-weight: 600; }
+    .plan-menu button + button { border-top: 1px solid var(--border); }
+
+    .copy-toast {
+      position: fixed;
+      bottom: 2rem;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--surface);
+      border: 1px solid var(--green);
+      color: var(--green);
+      padding: 0.5rem 1rem;
+      border-radius: 4px;
+      font-size: 0.85rem;
+      z-index: 100;
+      animation: fadeout 1.5s forwards;
+    }
+
+    @keyframes fadeout {
+      0%, 70% { opacity: 1; }
+      100% { opacity: 0; }
     }
 
     .ask-section {
@@ -182,10 +262,16 @@
       border: 1px solid var(--border);
       border-radius: 4px;
       font-size: 0.85rem;
-      white-space: pre-wrap;
       max-height: 300px;
       overflow-y: auto;
+      line-height: 1.5;
     }
+
+    .explanation-box p { margin: 0.4rem 0; }
+    .explanation-box pre { background: var(--surface); padding: 0.6rem; border-radius: 4px; overflow-x: auto; margin: 0.5rem 0; }
+    .explanation-box code { font-size: 0.8rem; }
+    .explanation-box ul, .explanation-box ol { padding-left: 1.2rem; margin: 0.4rem 0; }
+    .explanation-box h1, .explanation-box h2, .explanation-box h3 { font-size: 0.95rem; margin: 0.6rem 0 0.3rem; }
 
     .error-text { color: var(--red); font-size: 0.85rem; margin-top: 0.5rem; }
 
@@ -227,53 +313,34 @@
       margin-bottom: 0.8rem;
     }
 
-    .selection-item {
+    .selection-list {
       display: flex;
-      align-items: center;
-      gap: 0.6rem;
-      padding: 0.5rem 0;
-      border-bottom: 1px solid var(--border);
+      flex-direction: column;
+      gap: 0.5rem;
     }
 
-    .selection-item:last-of-type { border-bottom: none; }
-
-    .selection-item input[type="checkbox"] {
-      width: 16px;
-      height: 16px;
-      accent-color: var(--accent);
-      cursor: pointer;
-    }
-
-    .selection-item label {
-      cursor: pointer;
-      flex: 1;
+    .selection-btn {
       display: flex;
       justify-content: space-between;
       align-items: center;
-    }
-
-    .selection-item .ctrl-name { font-family: monospace; font-weight: 600; }
-    .selection-item .ctrl-path { font-size: 0.75rem; color: var(--text-muted); }
-
-    .selection-actions {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-top: 1rem;
-      padding-top: 0.8rem;
-      border-top: 1px solid var(--border);
-    }
-
-    .select-all-toggle {
-      display: flex;
-      align-items: center;
-      gap: 0.4rem;
-      font-size: 0.85rem;
-      color: var(--text-muted);
+      width: 100%;
+      padding: 0.7rem 1rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
       cursor: pointer;
+      font-size: 0.95rem;
+      transition: border-color 0.15s, background 0.15s;
     }
 
-    .select-all-toggle input { cursor: pointer; }
+    .selection-btn:hover {
+      border-color: var(--accent);
+      background: var(--surface-hover);
+    }
+
+    .selection-btn .ctrl-name { font-family: monospace; font-weight: 600; }
+    .selection-btn .ctrl-path { font-size: 0.75rem; color: var(--text-muted); }
   </style>
 </head>
 <body>
@@ -283,11 +350,11 @@
     // ── State ─────────────────────────────────────────────────
 
     let pipeline = { phase: 'idle', screens: {}, errors: [] };
-    let decisions = {};
-    let explanations = {};   // { "screen:finding_id": "text" }
-    let askAnswers = {};     // { "screen": "text" }
-    let loadingExplain = {}; // { "screen:finding_id": true }
-    let loadingAsk = {};     // { "screen": true }
+    let findingDecisions = {};  // { "screen:finding_id": true|false } — true=approved (default)
+    let explanations = {};      // { "screen:finding_id": "text" }
+    let askAnswers = {};        // { "screen": "text" }
+    let loadingExplain = {};    // { "screen:finding_id": true }
+    let loadingAsk = {};        // { "screen": true }
 
     // ── SSE Connection ────────────────────────────────────────
 
@@ -304,10 +371,6 @@
 
     // ── API Calls ─────────────────────────────────────────────
 
-    async function startPipeline() {
-      await fetch('/pipeline/start', { method: 'POST' });
-    }
-
     async function shutdownServer() {
       if (!confirm('Shut down the server?')) return;
       await fetch('/shutdown', { method: 'POST' });
@@ -315,13 +378,39 @@
     }
 
     async function resetPipeline() {
-      decisions = {};
+      findingDecisions = {};
       explanations = {};
       askAnswers = {};
       await fetch('/pipeline/reset', { method: 'POST' });
     }
 
+    function isFindingApproved(screenName, findingId) {
+      const key = `${screenName}:${findingId}`;
+      return findingDecisions[key] !== false; // default approved
+    }
+
+    function toggleFinding(screenName, findingId) {
+      const key = `${screenName}:${findingId}`;
+      findingDecisions[key] = !isFindingApproved(screenName, findingId);
+      render();
+    }
+
     async function submitDecisions() {
+      const decisions = {};
+      for (const screen of Object.values(pipeline.screens)) {
+        if (screen.status !== 'analyzed') continue;
+        const findings = screen.analysis?.findings || [];
+        const approved = findings.filter(f => isFindingApproved(screen.name, f.id)).map(f => f.id);
+
+        if (approved.length === 0) {
+          decisions[screen.name] = { action: 'skip' };
+        } else if (approved.length === findings.length) {
+          decisions[screen.name] = { action: 'approve' };
+        } else {
+          decisions[screen.name] = { action: 'selective', approved_findings: approved };
+        }
+      }
+
       await fetch('/decisions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -364,27 +453,22 @@
       await fetch(`/pipeline/retry/${screen}`, { method: 'POST' });
     }
 
-    async function analyzeSelected() {
-      const checked = document.querySelectorAll('.selection-item input[type="checkbox"]:checked');
-      const controllers = Array.from(checked).map(cb => cb.value);
-      if (!controllers.length) return;
-
+    async function analyzeController(name) {
       await fetch('/pipeline/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ controllers })
+        body: JSON.stringify({ controller: name })
       });
     }
 
-    function toggleSelectAll(master) {
-      const checkboxes = document.querySelectorAll('.selection-item input[type="checkbox"]:not(.select-all-cb)');
-      checkboxes.forEach(cb => cb.checked = master.checked);
+    async function loadExistingAnalysis(name) {
+      await fetch('/pipeline/load-analysis', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ controller: name })
+      });
     }
 
-    function setDecision(screen, action, notes = '') {
-      decisions[screen] = { action, notes };
-      render();
-    }
 
     // ── Rendering ─────────────────────────────────────────────
 
@@ -394,9 +478,8 @@
       const phase = pipeline.phase;
       const isDecisionPhase = phase === 'awaiting_decisions';
 
-      const analyzedCount = screens.filter(s => s.status === 'analyzed').length;
-      const decidedCount = Object.keys(decisions).length;
       const isSelectionPhase = phase === 'awaiting_selection';
+      const isIdle = phase === 'idle' || phase === 'discovering';
 
       app.innerHTML = `
         <header>
@@ -405,31 +488,32 @@
         </header>
 
         <div class="controls">
-          <button class="primary" onclick="startPipeline()"
-            ${phase !== 'idle' ? 'disabled' : ''}>
-            Start Pipeline
-          </button>
           <button onclick="resetPipeline()">Reset</button>
           <button onclick="shutdownServer()" style="margin-left:auto;color:var(--red);border-color:var(--red)">Shutdown</button>
         </div>
 
+        ${isIdle ? '<div style="color:var(--text-muted);margin-bottom:1rem;">Discovering controllers...</div>' : ''}
         ${isSelectionPhase ? renderSelectionPanel(screens) : ''}
 
         <div class="screens">
           ${!isSelectionPhase ? screens.map(s => renderScreen(s, isDecisionPhase)).join('') : ''}
         </div>
 
-        ${isDecisionPhase ? `
-          <div class="submit-bar">
-            <span class="decision-summary">
-              ${decidedCount} of ${analyzedCount} screens decided
-            </span>
-            <button class="primary" onclick="submitDecisions()"
-              ${decidedCount < analyzedCount ? 'disabled' : ''}>
-              Submit Decisions &amp; Harden
-            </button>
-          </div>
-        ` : ''}
+        ${isDecisionPhase ? (() => {
+          const allFindings = screens.flatMap(s => (s.analysis?.findings || []).map(f => ({ screen: s.name, id: f.id })));
+          const approvedCount = allFindings.filter(f => isFindingApproved(f.screen, f.id)).length;
+          return `
+            <div class="submit-bar">
+              <span class="decision-summary">
+                ${approvedCount} of ${allFindings.length} findings approved
+              </span>
+              <button class="primary" onclick="submitDecisions()"
+                ${approvedCount === 0 ? 'disabled' : ''}>
+                Harden (${approvedCount})
+              </button>
+            </div>
+          `;
+        })() : ''}
 
         ${pipeline.errors.length ? `
           <div style="margin-top: 1rem;">
@@ -445,32 +529,56 @@
     function renderSelectionPanel(screens) {
       return `
         <div class="selection-panel">
-          <h3>Select controllers to analyze</h3>
-          ${screens.map(s => `
-            <div class="selection-item">
-              <input type="checkbox" id="sel-${s.name}" value="${s.name}" checked />
-              <label for="sel-${s.name}">
-                <span class="ctrl-name">${s.name}</span>
-                <span class="ctrl-path">${s.path}</span>
-              </label>
-            </div>
-          `).join('')}
-          <div class="selection-actions">
-            <label class="select-all-toggle">
-              <input type="checkbox" class="select-all-cb" checked onchange="toggleSelectAll(this)" />
-              Select All
-            </label>
-            <button class="primary" onclick="analyzeSelected()">
-              Analyze Selected
-            </button>
+          <h3>Select a controller to harden</h3>
+          <div class="selection-list">
+            ${screens.map(s => {
+              if (s.existing_analysis_at) {
+                const age = formatAge(s.existing_analysis_at);
+                return `
+                  <div class="selection-btn" style="cursor:default; flex-direction:column; align-items:stretch; gap:0.5rem;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                      <span class="ctrl-name">${s.name.replace(/_controller$/, '')}</span>
+                      <span class="ctrl-path">${s.path}</span>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">
+                      <span style="font-size:0.75rem; color:var(--text-muted);">analysis from ${age}</span>
+                      <span style="display:flex; gap:0.4rem;">
+                        <button class="primary" onclick="loadExistingAnalysis('${s.name}')" style="font-size:0.8rem; padding:0.3rem 0.7rem;">
+                          Use Existing
+                        </button>
+                        <button onclick="analyzeController('${s.name}')" style="font-size:0.8rem; padding:0.3rem 0.7rem;">
+                          Re-analyze
+                        </button>
+                      </span>
+                    </div>
+                  </div>
+                `;
+              }
+              return `
+                <button class="selection-btn" onclick="analyzeController('${s.name}')">
+                  <span class="ctrl-name">${s.name.replace(/_controller$/, '')}</span>
+                  <span class="ctrl-path">${s.path}</span>
+                </button>
+              `;
+            }).join('')}
           </div>
         </div>
       `;
     }
 
+    function formatAge(isoDate) {
+      const diff = Date.now() - new Date(isoDate).getTime();
+      const mins = Math.floor(diff / 60000);
+      if (mins < 1) return 'just now';
+      if (mins < 60) return mins + 'm ago';
+      const hrs = Math.floor(mins / 60);
+      if (hrs < 24) return hrs + 'h ago';
+      const days = Math.floor(hrs / 24);
+      return days + 'd ago';
+    }
+
     function renderScreen(screen, isDecisionPhase) {
       const findings = screen.analysis?.findings || [];
-      const decision = decisions[screen.name];
       const verification = screen.verification;
 
       return `
@@ -492,13 +600,11 @@
 
           ${findings.length ? `
             <div class="findings">
-              ${findings.map(f => renderFinding(screen.name, f)).join('')}
+              ${findings.map(f => renderFinding(screen.name, f, isDecisionPhase)).join('')}
             </div>
           ` : ''}
 
           ${screen.analysis?.notes ? `<div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;">${screen.analysis.notes}</div>` : ''}
-
-          ${isDecisionPhase && screen.status === 'analyzed' ? renderDecisionBar(screen.name, decision) : ''}
 
           ${screen.status === 'analyzed' || screen.status === 'hardened' || screen.status === 'verified' ? `
             <div class="ask-section">
@@ -508,7 +614,7 @@
                 ${loadingAsk[screen.name] ? '...' : 'Ask'}
               </button>
             </div>
-            ${askAnswers[screen.name] ? `<div class="explanation-box">${escapeHtml(askAnswers[screen.name])}</div>` : ''}
+            ${askAnswers[screen.name] ? `<div class="explanation-box">${renderMarkdown(askAnswers[screen.name])}</div>` : ''}
           ` : ''}
 
           ${verification ? renderVerification(verification) : ''}
@@ -522,10 +628,11 @@
       `;
     }
 
-    function renderFinding(screenName, finding) {
+    function renderFinding(screenName, finding, isDecisionPhase) {
       const key = `${screenName}:${finding.id}`;
+      const approved = isFindingApproved(screenName, finding.id);
       return `
-        <div class="finding">
+        <div class="finding ${!approved ? 'is-skipped' : ''}">
           <div class="finding-info">
             <div class="finding-summary">
               <span class="severity-${finding.severity}">[${finding.severity}]</span>
@@ -536,37 +643,31 @@
             </div>
           </div>
           <div class="finding-actions">
+            ${isDecisionPhase ? `
+              <button class="finding-toggle ${approved ? 'approved' : 'skipped'}"
+                onclick="toggleFinding('${screenName}', '${finding.id}')"
+                title="${approved ? 'Click to skip' : 'Click to approve'}">
+                ${approved ? '✓' : '✗'}
+              </button>
+            ` : ''}
             <button onclick="explainFinding('${screenName}', '${finding.id}')"
               ${loadingExplain[key] ? 'disabled' : ''}>
               ${loadingExplain[key] ? '...' : 'Explain'}
             </button>
+            <div class="plan-dropdown" onclick="event.stopPropagation()">
+              <button onclick="togglePlanMenu(event)">Plan</button>
+              <div class="plan-menu">
+                ${['controller', 'module', 'app'].map(s =>
+                  `<button class="${finding.scope === s ? 'recommended' : ''}" onclick="copyPlan('${screenName}', '${finding.id}', '${s}')">${s}${finding.scope === s ? ' (recommended)' : ''}</button>`
+                ).join('')}
+              </div>
+            </div>
           </div>
         </div>
-        ${explanations[key] ? `<div class="explanation-box">${escapeHtml(explanations[key])}</div>` : ''}
+        ${explanations[key] ? `<div class="explanation-box">${renderMarkdown(explanations[key])}</div>` : ''}
       `;
     }
 
-    function renderDecisionBar(screenName, decision) {
-      const current = decision?.action || null;
-      return `
-        <div class="decision-bar">
-          <span style="font-size: 0.85rem; margin-right: 0.5rem;">Decision:</span>
-          <button class="${current === 'approve' ? 'approve' : ''}"
-            onclick="setDecision('${screenName}', 'approve')">
-            ✓ Approve
-          </button>
-          <button class="${current === 'modify' ? 'primary' : ''}"
-            onclick="promptModify('${screenName}')">
-            ✎ Modify
-          </button>
-          <button class="${current === 'skip' ? 'skip' : ''}"
-            onclick="setDecision('${screenName}', 'skip')">
-            ✗ Skip
-          </button>
-          ${current ? `<span style="font-size: 0.8rem; color: var(--green); margin-left: 0.5rem;">→ ${current}</span>` : ''}
-        </div>
-      `;
-    }
 
     function renderVerification(v) {
       const rec = v.recommendation || 'review';
@@ -579,12 +680,6 @@
       `;
     }
 
-    function promptModify(screenName) {
-      const notes = prompt('Modification instructions:');
-      if (notes !== null) {
-        setDecision(screenName, 'modify', notes);
-      }
-    }
 
     function escapeHtml(str) {
       if (typeof str !== 'string') str = JSON.stringify(str, null, 2);
@@ -592,6 +687,111 @@
       div.textContent = str;
       return div.innerHTML;
     }
+
+    function renderMarkdown(str) {
+      if (typeof str !== 'string') str = JSON.stringify(str, null, 2);
+      return marked.parse(str);
+    }
+
+    // ── Plan Prompt Generation ─────────────────────────────
+
+    function getFinding(screenName, findingId) {
+      const screen = pipeline.screens[screenName];
+      return (screen?.analysis?.findings || []).find(f => f.id === findingId);
+    }
+
+    function getScreen(screenName) {
+      return pipeline.screens[screenName];
+    }
+
+    function buildPlan(screenName, findingId, scope) {
+      const finding = getFinding(screenName, findingId);
+      const screen = getScreen(screenName);
+      if (!finding || !screen) return '';
+
+      const path = screen.path;
+      // Derive module dir from controller path: app/controllers/blog/posts_controller.rb → blog
+      const parts = path.split('/');
+      const nsIndex = parts.indexOf('controllers') + 1;
+      const ns = nsIndex > 0 && nsIndex < parts.length - 1 ? parts[nsIndex] : null;
+
+      const issue = [
+        `**[${finding.severity}] ${finding.summary}**`,
+        '',
+        finding.detail,
+        '',
+        finding.suggested_fix ? `Suggested fix: ${finding.suggested_fix}` : ''
+      ].filter(s => s !== undefined && s !== null).join('\n');
+
+      const planInstructions = `Do NOT implement a fix yet. Instead:\n1. Explain the risk in practical terms — what could go wrong, and how likely is it?\n2. Propose 2-3 approaches to fix it, with trade-offs (complexity, scope of change, dependencies)\n3. Recommend one approach and ask me how I'd like to proceed`;
+
+      if (scope === 'controller') {
+        return `Read \`${path}\` and investigate this security finding:\n\n${issue}\n\n${planInstructions}`;
+      }
+
+      if (scope === 'module' && ns) {
+        return `Read \`${path}\` and the related files in the \`${ns}\` namespace (\`app/models/${ns}/\`, \`app/views/${ns}/\`, \`app/controllers/${ns}/\`) to investigate this security finding:\n\n${issue}\n\n${planInstructions}`;
+      }
+
+      // app scope (or module fallback if no namespace)
+      return `Read \`${path}\` and investigate this security finding in the context of the full application — check routes, application controller, related models, and other controllers for similar patterns:\n\n${issue}\n\n${planInstructions}`;
+    }
+
+    function copyToClipboard(text) {
+      if (navigator.clipboard && window.isSecureContext) {
+        return navigator.clipboard.writeText(text);
+      }
+      // Fallback for non-secure contexts (e.g. WSL2 IP access)
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      try {
+        document.execCommand('copy');
+        return Promise.resolve();
+      } catch (err) {
+        return Promise.reject(err);
+      } finally {
+        textarea.remove();
+      }
+    }
+
+    function copyPlan(screenName, findingId, scope) {
+      const text = buildPlan(screenName, findingId, scope);
+      copyToClipboard(text).then(() => {
+        showToast(`Copied ${scope} plan prompt`);
+      }).catch(() => {
+        showToast(`Failed to copy — check browser permissions`);
+      });
+      // Close dropdown
+      document.querySelectorAll('.plan-dropdown.open').forEach(el => el.classList.remove('open'));
+    }
+
+    function togglePlanMenu(event) {
+      event.stopPropagation();
+      const dropdown = event.currentTarget.closest('.plan-dropdown');
+      const wasOpen = dropdown.classList.contains('open');
+      // Close all
+      document.querySelectorAll('.plan-dropdown.open').forEach(el => el.classList.remove('open'));
+      if (!wasOpen) dropdown.classList.toggle('open');
+    }
+
+    function showToast(msg) {
+      const existing = document.querySelector('.copy-toast');
+      if (existing) existing.remove();
+      const el = document.createElement('div');
+      el.className = 'copy-toast';
+      el.textContent = msg;
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 1500);
+    }
+
+    // Close dropdown on outside click
+    document.addEventListener('click', () => {
+      document.querySelectorAll('.plan-dropdown.open').forEach(el => el.classList.remove('open'));
+    });
 
     // ── Boot ──────────────────────────────────────────────────
 
