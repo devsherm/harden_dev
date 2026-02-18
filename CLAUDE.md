@@ -4,7 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Purpose
 
-This is a Rails 8 sandbox application — a Blog with posts and comments — used as a realistic test bed for Claude-assisted Rails development workflows.
+This repository serves two purposes:
+
+1. **Rails sandbox** — A Blog app (posts and comments) used as a realistic test bed for Claude-assisted Rails development workflows.
+2. **Harden controller tool** (`tools/harden-controller/`) — A standalone Sinatra app being developed here that orchestrates parallel `claude -p` calls to analyze and harden Rails controllers. This is **not** a Claude Code skill — it's an independent tool with its own Gemfile, HTTP server, and browser UI. It may move to its own repository later.
 
 **IMPORTANT: The `spec-pipeline` plugin is an INSTALLED dependency, NOT developed in this repository.** Do NOT modify, debug, or treat any plugin code (under `~/.claude/plugins/`) as part of this project. Plugin skills are invoked via slash commands (`/spec-pipeline:generate-plan`, `/spec-pipeline:execute-plan`, etc.) and should be treated as external tools — like a CLI or library — not as source code to edit.
 
