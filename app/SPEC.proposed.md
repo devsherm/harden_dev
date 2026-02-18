@@ -32,6 +32,7 @@ A minimal multi-page blog where visitors can read posts, create new posts, and l
 
 ### Controllers
 
+- `ApplicationController` enforces `allow_browser versions: :modern` and calls `stale_when_importmap_changes`, which invalidates ETags for HTML responses when the importmap changes. These behaviors are inherited by all controllers.
 - `Blog::PostsController` provides standard CRUD actions: index, show, new, create, edit, update, destroy.
 - `Blog::CommentsController` provides actions: index, new, create, edit, update, destroy. There is no show action — Comments are viewed on the parent Post's show page or via the Comment index.
 - `Blog::CommentsController` provides a `toggle_like` action that toggles the `liked_by_author` field on a Comment (see Liked by Author under Views).
@@ -97,6 +98,8 @@ All views use ERB templates with partials for reuse. JSON representations are av
 
 - The primary path for creating a Comment is the inline form on the Post show page (described above).
 - A standalone new Comment form exists at `/blog/comments/new` and edit at `/blog/comments/:id/edit`, consistent with the resourceful routes, but these are secondary paths.
+- The standalone new Comment form contains **post** (dropdown or ID input for selecting the parent Post), **author** (text input), and **body** (textarea).
+- The Comment edit form contains **author** (text input) and **body** (textarea). The `liked_by_author` field is not exposed on any Comment form — it is controlled exclusively via the toggle button on the Post show page.
 - The Comment edit page includes a "Back to post" link pointing to the parent Post's show page.
 - On successful Comment create, the user is redirected back to the parent Post's show page with a flash notice: "Comment was successfully created."
 - On successful Comment update, the user is redirected back to the parent Post's show page with a flash notice: "Comment was successfully updated."
