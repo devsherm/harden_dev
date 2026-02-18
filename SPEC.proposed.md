@@ -24,25 +24,30 @@ A minimal multi-page blog where visitors can read posts, create new posts, and l
 
 ### Models
 
-- `Blog::Post` validates presence of **title** and **body**.
+- `Blog::Post` validates presence of **title**, **body**, and **author**.
 - `Blog::Post` has many Comments (`has_many :comments, dependent: :destroy`).
-- `Blog::Comment` validates presence of **body** and **post** association.
+- `Blog::Comment` validates presence of **author**, **body**, and **post** association.
 - `Blog::Comment` belongs to a Post (`belongs_to :post`).
 - The foreign key from `blog_comments.post_id` to `blog_posts.id` is enforced at the database level.
 
 ### Controllers
 
 - `Blog::PostsController` provides standard CRUD actions: index, show, new, create, edit, update, destroy.
-- `Blog::CommentsController` provides standard CRUD actions: index, show, new, create, edit, update, destroy.
+- `Blog::CommentsController` provides actions: index, new, create, edit, update, destroy. There is no show action — Comments are viewed on the parent Post's show page or via the Comment index.
+- `Blog::CommentsController` provides a `toggle_like` action that toggles the `liked_by_author` field on a Comment (see Liked by Author under Views).
 - Both controllers use `params.expect()` for strong parameters.
-- Creating a Post with a blank title or body returns validation errors and re-renders the form.
-- Creating a Comment with a blank body returns validation errors and re-renders the form.
+- Creating a Post with a blank title, body, or author returns validation errors and re-renders the form.
+- Updating a Post with invalid params returns validation errors (HTTP 422) and re-renders the edit form with error summary.
+- Creating a Comment with a blank author or body returns validation errors and re-renders the Post show page with the error summary above the inline Comment form. The submitted field values are preserved.
+- Updating a Comment with invalid params returns validation errors (HTTP 422) and re-renders the edit form with error summary.
 
 ### Routes
 
 - Posts are accessible under `namespace :blog` at `/blog/posts`.
-- Comments are accessible under `namespace :blog` at `/blog/comments`.
-- The root route resolves to the Posts index.
+- Comments are accessible under `namespace :blog` at `/blog/comments` (flat routes for index, new, create, edit, update, destroy).
+- Comments are also accessible via a nested route under Posts: `POST /blog/posts/:post_id/comments` for creating a Comment on a specific Post. The inline Comment form on the Post show page submits to this nested route.
+- A custom member route `PATCH /blog/comments/:id/toggle_like` is exposed for the liked-by-author toggle.
+- The root route (`GET /`) issues a **302 redirect** to `/blog/posts`.
 
 ### Views
 
@@ -66,16 +71,17 @@ All views use ERB templates with partials for reuse. JSON representations are av
 - Below the Post body, an "Edit" link and a "Delete" button are displayed. The Delete button submits a `DELETE` request — no confirmation dialog is required.
 - Below the Post actions, a **Comments section** is rendered with the heading "Comments".
 - Comments are listed in **created_at ascending** order (oldest first, preserving chronological conversation flow).
-- Each Comment displays **author** (defaulting to "Anonymous" if blank), **body**, **created_at** timestamp, and the **liked by author** indicator (see below).
+- Each Comment displays **author**, **body**, **created_at** timestamp, and the **liked by author** indicator (see below).
 - Each Comment has an "Edit" link and a "Delete" link.
 - **Comment empty state**: When the Post has no Comments, the text "No comments yet." is displayed.
-- Below the comments list, an inline **new Comment form** is rendered directly on the Post show page (not a separate page). The form contains fields for **author** (text input) and **body** (textarea), plus a "Post comment" submit button.
+- Below the comments list, an inline **new Comment form** is rendered directly on the Post show page (not a separate page). The form contains fields for **author** (text input) and **body** (textarea), plus a "Post comment" submit button. The form submits to the nested route `POST /blog/posts/:post_id/comments`.
 
 #### Liked by Author
 
-- On the Post show page, each Comment displays a "Like" or "Unlike" toggle link (or button).
+- On the Post show page, each Comment displays a "Like" or "Unlike" toggle link (or button) that submits a `PATCH` request to `/blog/comments/:id/toggle_like`.
 - When a Comment's `liked_by_author` field is blank or empty, the toggle reads "Like" and submitting it sets the field to the Post author's name.
 - When a Comment's `liked_by_author` field is populated, the toggle reads "Unlike" and submitting it clears the field. The Comment also displays a visual indicator (e.g., the text "Liked by {author name}") next to or below the Comment body.
+- After toggling, the user is redirected back to the parent Post's show page.
 - Since there is no authentication, the toggle is available to any visitor — this is intentional and consistent with the no-auth design.
 
 #### Post Form (New / Edit)
@@ -91,6 +97,7 @@ All views use ERB templates with partials for reuse. JSON representations are av
 
 - The primary path for creating a Comment is the inline form on the Post show page (described above).
 - A standalone new Comment form exists at `/blog/comments/new` and edit at `/blog/comments/:id/edit`, consistent with the resourceful routes, but these are secondary paths.
+- The Comment edit page includes a "Back to post" or "Cancel" link pointing to the parent Post's show page.
 - On successful Comment create, the user is redirected back to the parent Post's show page with a flash notice: "Comment was successfully created."
 - On successful Comment update, the user is redirected back to the parent Post's show page with a flash notice: "Comment was successfully updated."
 - On successful Comment destroy, the user is redirected back to the parent Post's show page with a flash notice: "Comment was successfully destroyed."
@@ -126,10 +133,12 @@ All views use ERB templates with partials for reuse. JSON representations are av
 
 | Assertion | How to verify |
 |---|---|
-| Post requires title | `Blog::Post.new(body: "x").valid?` returns `false` with error on `title` |
-| Post requires body | `Blog::Post.new(title: "x").valid?` returns `false` with error on `body` |
-| Comment requires body | `Blog::Comment.new(post: some_post).valid?` returns `false` with error on `body` |
-| Comment belongs to Post | `Blog::Comment.new(body: "x").valid?` returns `false` with error on `post` |
+| Post requires title | `Blog::Post.new(body: "x", author: "a").valid?` returns `false` with error on `title` |
+| Post requires body | `Blog::Post.new(title: "x", author: "a").valid?` returns `false` with error on `body` |
+| Post requires author | `Blog::Post.new(title: "x", body: "x").valid?` returns `false` with error on `author` |
+| Comment requires author | `Blog::Comment.new(body: "x", post: some_post).valid?` returns `false` with error on `author` |
+| Comment requires body | `Blog::Comment.new(author: "a", post: some_post).valid?` returns `false` with error on `body` |
+| Comment belongs to Post | `Blog::Comment.new(author: "a", body: "x").valid?` returns `false` with error on `post` |
 | Destroying a Post destroys its Comments | After `post.destroy`, `Blog::Comment.where(post_id: post.id).count` is `0` |
 
 ### Route and Controller Assertions
@@ -138,10 +147,15 @@ All views use ERB templates with partials for reuse. JSON representations are av
 |---|---|
 | POST /blog/posts with valid params redirects | Integration test confirms 302 redirect to the new Post's show page |
 | POST /blog/posts with blank title re-renders form | Integration test confirms 422 and form with error messages |
+| PATCH /blog/posts/:id with blank title re-renders edit form | Integration test confirms 422 and edit form with error messages |
+| POST /blog/posts/:post_id/comments with valid params redirects | Integration test confirms 302 redirect to the parent Post's show page |
+| POST /blog/posts/:post_id/comments with blank body re-renders Post show | Integration test confirms 422 and Post show page with Comment error messages |
+| PATCH /blog/comments/:id with blank body re-renders edit form | Integration test confirms 422 and edit form with error messages |
+| PATCH /blog/comments/:id/toggle_like toggles liked_by_author | Integration test confirms redirect to parent Post show and `liked_by_author` is set/cleared |
 | GET /blog/posts returns 200 | Integration test confirms success |
 | GET /blog/posts/:id returns 200 | Integration test confirms success for an existing Post |
 | GET /blog/posts.json returns JSON array | Response content type is `application/json` |
-| Root path resolves to Post index | `GET /` redirects or renders the Posts listing |
+| Root path redirects to Post index | `GET /` returns 302 redirect to `/blog/posts` |
 
 ### UX Assertions
 
@@ -162,4 +176,7 @@ All views use ERB templates with partials for reuse. JSON representations are av
 | Flash notice appears after Post destroy | System test: destroying a Post redirects to index with "Post was successfully destroyed." |
 | Flash notice appears after Comment create | System test: creating a Comment redirects to Post show with "Comment was successfully created." |
 | Validation errors display on failed Post create | System test: submitting a Post with blank title shows error summary containing "Title can't be blank" |
+| Validation errors display on failed Post update | System test: editing a Post and blanking the title shows error summary containing "Title can't be blank" |
+| Validation errors display on failed Comment create | System test: submitting inline Comment with blank body on Post show page shows error summary containing "Body can't be blank" |
+| Comment edit page links back to parent Post | System test: Comment edit page contains a "Back to post" or "Cancel" link whose `href` matches the parent Post's show path |
 | Navigation header links to root | System test: every page contains a header link with text "Blog" pointing to the root path |
