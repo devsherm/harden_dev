@@ -4,7 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Purpose
 
-This is a Rails 8 sandbox application used as the **development environment for a Claude Plugin for Rails development**. The app itself (a Blog with posts and comments) exists as a realistic test bed — not as the end product. Work in this repo focuses on building and testing Claude-assisted Rails tooling against a real Rails codebase.
+This is a Rails 8 sandbox application — a Blog with posts and comments — used as a realistic test bed for Claude-assisted Rails development workflows.
+
+**IMPORTANT: The `spec-pipeline` plugin is an INSTALLED dependency, NOT developed in this repository.** Do NOT modify, debug, or treat any plugin code (under `~/.claude/plugins/`) as part of this project. Plugin skills are invoked via slash commands (`/spec-pipeline:generate-plan`, `/spec-pipeline:execute-plan`, etc.) and should be treated as external tools — like a CLI or library — not as source code to edit.
+
+### Plugin environment note
+
+Plugin skills define a Step 0 that checks for `$CLAUDE_PLUGIN_ROOT`. This env var is **not** a persistent shell variable — it is only injected at skill invocation time. When Step 0 finds it empty, derive the plugin root from the skill's "Base directory for this skill" path (strip the `/skills/<skill-name>` suffix). This is expected behavior, not a bug.
 
 ## Common Commands
 
