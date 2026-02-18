@@ -1,0 +1,11 @@
+<% content_for :title, "New post" %>
+
+<h1>New post</h1>
+
+<%= render "form", blog_post: @blog_post %>
+
+<br>
+
+<div>
+  <%= link_to "Back to posts", blog_posts_path %>
+</div>
