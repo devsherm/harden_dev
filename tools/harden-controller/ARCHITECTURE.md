@@ -39,15 +39,14 @@ Phase 4: VERIFY (parallel, autonomous)
 Every `claude -p` call is one-shot and stateless. Context is passed in via the prompt (analysis JSON, decision, controller file contents). This makes every call independently reproducible and debuggable.
 
 ### Sidecar files for per-screen state
-Each screen gets its own notes/state directory next to the controller:
+Each screen gets its own state directory next to the controller:
 ```
 app/controllers/projects_controller.rb
 app/controllers/.harden/projects_controller/
-  ├── analysis.json      # Phase 1 output
-  ├── notes.md           # Detailed findings log
-  ├── decision.json      # Phase 2 human decision
-  ├── hardened.json       # Phase 3 output
-  └── verification.json   # Phase 4 output
+  ├── analysis.json        # Phase 1 output
+  ├── hardened.json         # Phase 3 output
+  ├── hardened_preview.rb   # Phase 3 hardened source (preview, not applied)
+  └── verification.json     # Phase 4 output
 ```
 No shared files = no collisions when running in parallel.
 
@@ -75,13 +74,16 @@ GET    /pipeline/status                   → Current state snapshot (non-stream
 ## Running
 
 ```bash
+cd tools/harden-controller   # or wherever you placed this tool
 bundle install
-ruby server.rb
+RAILS_ROOT=/path/to/your/rails/app bundle exec ruby server.rb
 # Open http://localhost:4567
 ```
+
+`RAILS_ROOT` defaults to `.` (the current working directory) if not set.
 
 ## Integration with Claude Code
 
 This orchestrator is designed to be launched from within a Rails project. It expects to find controllers in the standard Rails layout (`app/controllers/`). The `.harden/` sidecar directories are created next to the controllers being hardened.
 
-Bring this into your project and adapt the prompts in `lib/prompts.rb` to match your hardening conventions.
+Bring this into your project and adapt the prompts in `prompts.rb` to match your hardening conventions.

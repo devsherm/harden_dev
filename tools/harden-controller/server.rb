@@ -1,13 +1,12 @@
 require "sinatra"
 require "sinatra/streaming"
 require "json"
-require_relative "lib/pipeline"
+require_relative "pipeline"
 
 # ── Configuration ────────────────────────────────────────────
 
 set :port, 4567
 set :bind, "0.0.0.0"
-set :public_folder, File.join(__dir__, "public")
 set :server, :puma
 
 # Rails root defaults to current directory (run from within your Rails project)
@@ -30,7 +29,7 @@ end
 # ── Static UI ────────────────────────────────────────────────
 
 get "/" do
-  send_file File.join(settings.public_folder, "index.html")
+  send_file File.join(__dir__, "index.html")
 end
 
 # ── Pipeline Control ─────────────────────────────────────────
