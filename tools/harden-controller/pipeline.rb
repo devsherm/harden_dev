@@ -3,7 +3,7 @@ require "fileutils"
 require_relative "prompts"
 
 class Pipeline
-  PHASES = %w[idle discovering analyzing awaiting_decisions hardening verifying complete errored].freeze
+  PHASES = %w[idle discovering awaiting_selection analyzing awaiting_decisions hardening verifying complete errored].freeze
 
   attr_reader :state
 
@@ -51,6 +51,17 @@ class Pipeline
         }
       end
     end
+
+    update_phase("awaiting_selection")
+  end
+
+  # ── Selection ─────────────────────────────────────────────
+
+  def select_controllers(names)
+    @mutex.synchronize do
+      @state[:screens].keep_if { |name, _| names.include?(name) }
+    end
+    run_analysis
   end
 
   # ── Phase 1: Parallel Analysis ─────────────────────────────

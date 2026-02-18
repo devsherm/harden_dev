@@ -35,17 +35,28 @@ end
 
 # ── Pipeline Control ─────────────────────────────────────────
 
-# Start the pipeline (discover controllers, then analyze)
+# Start the pipeline (discover controllers, then pause for selection)
 post "/pipeline/start" do
   content_type :json
   halt 409, { error: "Pipeline already running" }.to_json unless $pipeline.state[:phase] == "idle"
 
-  Thread.new do
-    $pipeline.discover_controllers
-    $pipeline.run_analysis
-  end
+  Thread.new { $pipeline.discover_controllers }
 
   { status: "started", phase: "discovering" }.to_json
+end
+
+# Analyze selected controllers
+post "/pipeline/analyze" do
+  content_type :json
+  halt 409, { error: "Not in selection phase" }.to_json unless $pipeline.state[:phase] == "awaiting_selection"
+
+  body = JSON.parse(request.body.read)
+  controllers = body["controllers"]
+  halt 400, { error: "No controllers specified" }.to_json if controllers.nil? || controllers.empty?
+
+  Thread.new { $pipeline.select_controllers(controllers) }
+
+  { status: "analyzing", phase: "analyzing" }.to_json
 end
 
 # Reset pipeline (for re-running)

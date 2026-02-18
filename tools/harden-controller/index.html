@@ -52,6 +52,7 @@
 
     .phase-idle { background: var(--border); }
     .phase-discovering, .phase-analyzing { background: #2563eb33; color: var(--accent); }
+    .phase-awaiting_selection { background: #f59e0b33; color: var(--yellow); }
     .phase-awaiting_decisions { background: #f59e0b33; color: var(--yellow); }
     .phase-hardening { background: #8b5cf633; color: #a78bfa; }
     .phase-verifying { background: #6366f133; color: #818cf8; }
@@ -212,6 +213,67 @@
     .verification-accept { background: #22c55e1a; border: 1px solid #22c55e33; }
     .verification-review { background: #f59e0b1a; border: 1px solid #f59e0b33; }
     .verification-reject { background: #ef44441a; border: 1px solid #ef444433; }
+
+    .selection-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.2rem;
+      margin-bottom: 1rem;
+    }
+
+    .selection-panel h3 {
+      font-size: 1rem;
+      margin-bottom: 0.8rem;
+    }
+
+    .selection-item {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.5rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .selection-item:last-of-type { border-bottom: none; }
+
+    .selection-item input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    .selection-item label {
+      cursor: pointer;
+      flex: 1;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .selection-item .ctrl-name { font-family: monospace; font-weight: 600; }
+    .selection-item .ctrl-path { font-size: 0.75rem; color: var(--text-muted); }
+
+    .selection-actions {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 1rem;
+      padding-top: 0.8rem;
+      border-top: 1px solid var(--border);
+    }
+
+    .select-all-toggle {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      cursor: pointer;
+    }
+
+    .select-all-toggle input { cursor: pointer; }
   </style>
 </head>
 <body>
@@ -302,6 +364,23 @@
       await fetch(`/pipeline/retry/${screen}`, { method: 'POST' });
     }
 
+    async function analyzeSelected() {
+      const checked = document.querySelectorAll('.selection-item input[type="checkbox"]:checked');
+      const controllers = Array.from(checked).map(cb => cb.value);
+      if (!controllers.length) return;
+
+      await fetch('/pipeline/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ controllers })
+      });
+    }
+
+    function toggleSelectAll(master) {
+      const checkboxes = document.querySelectorAll('.selection-item input[type="checkbox"]:not(.select-all-cb)');
+      checkboxes.forEach(cb => cb.checked = master.checked);
+    }
+
     function setDecision(screen, action, notes = '') {
       decisions[screen] = { action, notes };
       render();
@@ -317,11 +396,12 @@
 
       const analyzedCount = screens.filter(s => s.status === 'analyzed').length;
       const decidedCount = Object.keys(decisions).length;
+      const isSelectionPhase = phase === 'awaiting_selection';
 
       app.innerHTML = `
         <header>
           <h1>🛡 Harden Orchestrator</h1>
-          <span class="phase-badge phase-${phase}">${phase.replace('_', ' ')}</span>
+          <span class="phase-badge phase-${phase}">${phase.replace(/_/g, ' ')}</span>
         </header>
 
         <div class="controls">
@@ -333,8 +413,10 @@
           <button onclick="shutdownServer()" style="margin-left:auto;color:var(--red);border-color:var(--red)">Shutdown</button>
         </div>
 
+        ${isSelectionPhase ? renderSelectionPanel(screens) : ''}
+
         <div class="screens">
-          ${screens.map(s => renderScreen(s, isDecisionPhase)).join('')}
+          ${!isSelectionPhase ? screens.map(s => renderScreen(s, isDecisionPhase)).join('') : ''}
         </div>
 
         ${isDecisionPhase ? `
@@ -357,6 +439,32 @@
             `).join('')}
           </div>
         ` : ''}
+      `;
+    }
+
+    function renderSelectionPanel(screens) {
+      return `
+        <div class="selection-panel">
+          <h3>Select controllers to analyze</h3>
+          ${screens.map(s => `
+            <div class="selection-item">
+              <input type="checkbox" id="sel-${s.name}" value="${s.name}" checked />
+              <label for="sel-${s.name}">
+                <span class="ctrl-name">${s.name}</span>
+                <span class="ctrl-path">${s.path}</span>
+              </label>
+            </div>
+          `).join('')}
+          <div class="selection-actions">
+            <label class="select-all-toggle">
+              <input type="checkbox" class="select-all-cb" checked onchange="toggleSelectAll(this)" />
+              Select All
+            </label>
+            <button class="primary" onclick="analyzeSelected()">
+              Analyze Selected
+            </button>
+          </div>
+        </div>
       `;
     }
 
