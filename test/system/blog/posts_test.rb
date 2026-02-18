@@ -7,8 +7,8 @@ class Blog::PostsTest < ApplicationSystemTestCase
 
     visit blog_posts_url
 
-    titles = all("a").map(&:text).select { |t| ["Old Post", "New Post"].include?(t) }
-    assert_equal ["New Post", "Old Post"], titles
+    titles = all("a").map(&:text).select { |t| [ "Old Post", "New Post" ].include?(t) }
+    assert_equal [ "New Post", "Old Post" ], titles
   end
 
   test "post index title links to show page" do

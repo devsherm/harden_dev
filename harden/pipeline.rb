@@ -233,12 +233,11 @@ class Pipeline
   private
 
   def claude_call(prompt)
-    # Escape the prompt for shell safety
-    escaped = prompt.gsub("'", "'\\''")
-    result = `claude -p '#{escaped}' 2>&1`
+    require "open3"
+    result, status = Open3.capture2e("claude", "-p", prompt)
 
-    unless $?.success?
-      raise "claude -p failed (exit #{$?.exitstatus}): #{result[0..500]}"
+    unless status.success?
+      raise "claude -p failed (exit #{status.exitstatus}): #{result[0..500]}"
     end
 
     result.strip
