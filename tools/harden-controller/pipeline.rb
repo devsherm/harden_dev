@@ -36,15 +36,51 @@ class Pipeline
       next if basename == "application_controller"
 
       relative = path.sub("#{@rails_root}/", "")
+      controller_mtime = File.mtime(path)
+
       analysis_file = sidecar_path(path, "analysis.json")
-      has_existing = File.exist?(analysis_file)
+      hardened_file = sidecar_path(path, "hardened.json")
+      verified_file = sidecar_path(path, "verification.json")
+
+      has_analysis = File.exist?(analysis_file)
+      has_hardened = File.exist?(hardened_file)
+      has_verified = File.exist?(verified_file)
+
+      # Parse analysis.json for risk level and finding counts
+      overall_risk = nil
+      finding_counts = nil
+      if has_analysis
+        begin
+          data = JSON.parse(File.read(analysis_file))
+          overall_risk = data["overall_risk"]
+          findings = data["findings"] || []
+          finding_counts = { high: 0, medium: 0, low: 0 }
+          findings.each { |f| sev = f["severity"]&.downcase; finding_counts[sev.to_sym] += 1 if finding_counts.key?(sev&.to_sym) }
+        rescue JSON::ParserError
+          # Sidecar is corrupt — treat as no analysis data
+        end
+      end
 
       @state[:controllers] << {
         name: basename,
         path: relative,
         full_path: path,
-        existing_analysis_at: has_existing ? File.mtime(analysis_file).iso8601 : nil
+        phases: { analyzed: has_analysis, hardened: has_hardened, verified: has_verified },
+        existing_analysis_at: has_analysis ? File.mtime(analysis_file).iso8601 : nil,
+        existing_hardened_at: has_hardened ? File.mtime(hardened_file).iso8601 : nil,
+        existing_verified_at: has_verified ? File.mtime(verified_file).iso8601 : nil,
+        stale: has_analysis ? controller_mtime > File.mtime(analysis_file) : nil,
+        overall_risk: overall_risk,
+        finding_counts: finding_counts
       }
+    end
+
+    # Sort: needs-attention first, then by risk (high > medium > low > nil), then alphabetical
+    risk_order = { "high" => 0, "medium" => 1, "low" => 2 }
+    @state[:controllers].sort_by! do |c|
+      needs_attention = (c[:stale] == true || c[:stale].nil?) ? 0 : 1
+      risk = risk_order.fetch(c[:overall_risk], 3)
+      [needs_attention, risk, c[:name]]
     end
 
     @state[:phase] = "awaiting_selection"
