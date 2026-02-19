@@ -1,11 +1,19 @@
 require "sinatra"
 require "sinatra/streaming"
 require "json"
+require "socket"
 require_relative "pipeline"
 
 # ── Configuration ────────────────────────────────────────────
 
-set :port, 4567
+def find_open_port(preferred)
+  TCPServer.open("0.0.0.0", preferred) { |s| s.addr[1] }
+rescue Errno::EADDRINUSE
+  # Let the OS pick an available port
+  TCPServer.open("0.0.0.0", 0) { |s| s.addr[1] }
+end
+
+set :port, find_open_port((ENV["PORT"] || 4567).to_i)
 set :bind, "0.0.0.0"
 set :server, :puma
 set :server_settings, { force_shutdown_after: 3 }
