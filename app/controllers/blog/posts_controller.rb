@@ -3,6 +3,7 @@ class Blog::PostsController < ApplicationController
   before_action :set_blog_post, only: %i[ show edit update destroy ]
   before_action :authorize_post_owner!, only: %i[ edit update destroy ]
 
+  rate_limit to: 60, within: 1.minute, only: %i[ index show ]
   rate_limit to: 5, within: 1.minute, only: %i[ create update ]
   rate_limit to: 3, within: 1.minute, only: :destroy
 
@@ -36,7 +37,7 @@ class Blog::PostsController < ApplicationController
         format.json { render :show, status: :created, location: @blog_post }
       else
         format.html { render :new, status: :unprocessable_entity }
-        format.json { render json: { errors: @blog_post.errors.full_messages }, status: :unprocessable_entity }
+        format.json { render json: { errors: sanitized_errors(@blog_post) }, status: :unprocessable_entity }
       end
     end
   end
@@ -49,7 +50,7 @@ class Blog::PostsController < ApplicationController
         format.json { render :show, status: :ok, location: @blog_post }
       else
         format.html { render :edit, status: :unprocessable_entity }
-        format.json { render json: { errors: @blog_post.errors.full_messages }, status: :unprocessable_entity }
+        format.json { render json: { errors: sanitized_errors(@blog_post) }, status: :unprocessable_entity }
       end
     end
   end
@@ -90,7 +91,18 @@ class Blog::PostsController < ApplicationController
       params.expect(blog_post: [ :title, :body, :topic ])
     end
 
+    # Cap page depth to prevent large-OFFSET DoS against the database.
+    # For larger datasets, consider keyset pagination (WHERE created_at < :cursor)
+    # which performs in constant time regardless of page depth.
     def pagination_offset
-      [ params.fetch(:page, 0).to_i, 0 ].max * 25
+      params.fetch(:page, 0).to_i.clamp(0, 400) * 25
+    end
+
+    # Map model errors to user-friendly messages without exposing internal
+    # attribute names, validation rules, or schema details.
+    def sanitized_errors(record)
+      record.errors.map do |error|
+        error.attribute.to_s.humanize
+      end.uniq.map { |field| "#{field} is invalid" }
     end
 end
