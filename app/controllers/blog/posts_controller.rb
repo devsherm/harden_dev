@@ -1,4 +1,5 @@
 class Blog::PostsController < ApplicationController
+  rate_limit to: 5, within: 1.minute, only: :create
   before_action :set_blog_post, only: %i[ show edit update destroy ]
 
   # GET /blog/posts or /blog/posts.json

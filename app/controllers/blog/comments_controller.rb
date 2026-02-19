@@ -1,4 +1,5 @@
 class Blog::CommentsController < ApplicationController
+  rate_limit to: 5, within: 1.minute, only: :create
   before_action :set_blog_comment, only: %i[ edit update destroy ]
 
   # GET /blog/comments or /blog/comments.json
