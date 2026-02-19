@@ -24,7 +24,7 @@ RAILS_ROOT = ENV.fetch("RAILS_ROOT", ".")
 $pipeline = Pipeline.new(rails_root: RAILS_ROOT)
 
 # Auto-discover controllers at startup so selection is the opening screen
-Thread.new { $pipeline.discover_controllers }
+$pipeline.safe_thread { $pipeline.discover_controllers }
 
 # ── CORS (for local dev if frontend runs separately) ────────
 
@@ -36,6 +36,17 @@ end
 
 options "*" do
   200
+end
+
+# ── Helpers ──────────────────────────────────────────────────
+
+helpers do
+  def parse_json_body
+    JSON.parse(request.body.read)
+  rescue JSON::ParserError => e
+    halt 400, { "Content-Type" => "application/json" },
+         { error: "Invalid JSON: #{e.message}" }.to_json
+  end
 end
 
 # ── Static UI ────────────────────────────────────────────────
@@ -51,17 +62,17 @@ post "/pipeline/analyze" do
   content_type :json
   halt 409, { error: "Discovery not complete" }.to_json unless $pipeline.state[:phase] == "ready"
 
-  body = JSON.parse(request.body.read)
+  body = parse_json_body
   controller = body["controller"]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
-  # Guard: workflow must not already be in an active phase
+  # Guard: workflow must not already be in an active status
   workflow = $pipeline.state[:workflows][controller]
-  if workflow && Pipeline::ACTIVE_PHASES.include?(workflow[:phase])
-    halt 409, { error: "#{controller} is already #{workflow[:phase]}" }.to_json
+  if workflow && Pipeline::ACTIVE_STATUSES.include?(workflow[:status])
+    halt 409, { error: "#{controller} is already #{workflow[:status]}" }.to_json
   end
 
-  Thread.new { $pipeline.select_controller(controller) }
+  $pipeline.safe_thread(workflow_name: controller) { $pipeline.select_controller(controller) }
 
   { status: "analyzing", controller: controller }.to_json
 end
@@ -71,13 +82,13 @@ post "/pipeline/load-analysis" do
   content_type :json
   halt 409, { error: "Discovery not complete" }.to_json unless $pipeline.state[:phase] == "ready"
 
-  body = JSON.parse(request.body.read)
+  body = parse_json_body
   controller = body["controller"]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
   workflow = $pipeline.state[:workflows][controller]
-  if workflow && Pipeline::ACTIVE_PHASES.include?(workflow[:phase])
-    halt 409, { error: "#{controller} is already #{workflow[:phase]}" }.to_json
+  if workflow && Pipeline::ACTIVE_STATUSES.include?(workflow[:status])
+    halt 409, { error: "#{controller} is already #{workflow[:status]}" }.to_json
   end
 
   begin
@@ -91,8 +102,10 @@ end
 # Reset pipeline (re-discovers controllers)
 post "/pipeline/reset" do
   content_type :json
+  old_pipeline = $pipeline
   $pipeline = Pipeline.new(rails_root: RAILS_ROOT)
-  Thread.new { $pipeline.discover_controllers }
+  old_pipeline.shutdown(timeout: 3)
+  $pipeline.safe_thread { $pipeline.discover_controllers }
   { status: "reset" }.to_json
 end
 
@@ -129,15 +142,15 @@ end
 # Body: { "controller": "...", "action": "approve|selective|skip", "approved_findings": [...] }
 post "/decisions" do
   content_type :json
-  body = JSON.parse(request.body.read)
+  body = parse_json_body
   controller = body.delete("controller")
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
   workflow = $pipeline.state[:workflows][controller]
   halt 404, { error: "No workflow for #{controller}" }.to_json unless workflow
-  halt 409, { error: "#{controller} is not awaiting decisions" }.to_json unless workflow[:phase] == "awaiting_decisions"
+  halt 409, { error: "#{controller} is not awaiting decisions" }.to_json unless workflow[:status] == "awaiting_decisions"
 
-  Thread.new { $pipeline.submit_decision(controller, body) }
+  $pipeline.safe_thread(workflow_name: controller) { $pipeline.submit_decision(controller, body) }
 
   { status: "decision_received", controller: controller }.to_json
 end
@@ -147,7 +160,7 @@ end
 # Ask a free-form question about a controller
 post "/ask" do
   content_type :json
-  body = JSON.parse(request.body.read)
+  body = parse_json_body
   controller = body["controller"]
   question = body["question"]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
@@ -159,7 +172,7 @@ end
 # Explain a specific finding
 post "/explain/:finding_id" do
   content_type :json
-  body = JSON.parse(request.body.read)
+  body = parse_json_body
   controller = body["controller"]
   finding_id = params[:finding_id]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
@@ -172,7 +185,7 @@ end
 
 post "/pipeline/retry-tests" do
   content_type :json
-  body = JSON.parse(request.body.read)
+  body = parse_json_body
   controller = body["controller"]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
@@ -180,7 +193,7 @@ post "/pipeline/retry-tests" do
   halt 404, { error: "No workflow for #{controller}" }.to_json unless workflow
   halt 409, { error: "#{controller} is not in tests_failed state" }.to_json unless workflow[:status] == "tests_failed"
 
-  Thread.new { $pipeline.retry_tests(controller) }
+  $pipeline.safe_thread(workflow_name: controller) { $pipeline.retry_tests(controller) }
 
   { status: "retrying_tests", controller: controller }.to_json
 end
@@ -189,7 +202,7 @@ end
 
 post "/pipeline/retry-ci" do
   content_type :json
-  body = JSON.parse(request.body.read)
+  body = parse_json_body
   controller = body["controller"]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
@@ -197,7 +210,7 @@ post "/pipeline/retry-ci" do
   halt 404, { error: "No workflow for #{controller}" }.to_json unless workflow
   halt 409, { error: "#{controller} is not in ci_failed state" }.to_json unless workflow[:status] == "ci_failed"
 
-  Thread.new { $pipeline.retry_ci(controller) }
+  $pipeline.safe_thread(workflow_name: controller) { $pipeline.retry_ci(controller) }
 
   { status: "retrying_ci", controller: controller }.to_json
 end
@@ -206,7 +219,7 @@ end
 
 post "/pipeline/retry" do
   content_type :json
-  body = JSON.parse(request.body.read)
+  body = parse_json_body
   controller = body["controller"]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 

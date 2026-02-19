@@ -171,6 +171,7 @@
     .workflow-dot.analyzing { background: var(--accent); animation: pulse 1s infinite; }
     .workflow-dot.awaiting_decisions { background: var(--yellow); }
     .workflow-dot.hardening { background: #a78bfa; animation: pulse 1s infinite; }
+    .workflow-dot.hardened { background: #818cf8; }
     .workflow-dot.testing { background: #38bdf8; animation: pulse 1s infinite; }
     .workflow-dot.fixing_tests { background: #f472b6; animation: pulse 1s infinite; }
     .workflow-dot.tested { background: #22d3ee; }
@@ -182,7 +183,7 @@
     .workflow-dot.verifying { background: #818cf8; animation: pulse 1s infinite; }
     .workflow-dot.complete { background: var(--green); }
     .workflow-dot.skipped { background: var(--text-muted); }
-    .workflow-dot.errored { background: var(--red); }
+    .workflow-dot.error { background: var(--red); }
     .workflow-dot.none { background: var(--text-muted); opacity: 0.2; }
 
     @keyframes pulse {
@@ -256,7 +257,7 @@
 
     .status-pending .status-dot { background: var(--text-muted); }
     .status-analyzing .status-dot { background: var(--accent); animation: pulse 1s infinite; }
-    .status-analyzed .status-dot { background: var(--yellow); }
+    .status-awaiting_decisions .status-dot { background: var(--yellow); }
     .status-hardening .status-dot { background: #a78bfa; animation: pulse 1s infinite; }
     .status-hardened .status-dot { background: #818cf8; }
     .status-testing .status-dot { background: #38bdf8; animation: pulse 1s infinite; }
@@ -268,7 +269,7 @@
     .status-ci_passed .status-dot { background: #2dd4bf; }
     .status-ci_failed .status-dot { background: var(--red); }
     .status-verifying .status-dot { background: #818cf8; animation: pulse 1s infinite; }
-    .status-verified .status-dot { background: var(--green); }
+    .status-complete .status-dot { background: var(--green); }
     .status-skipped .status-dot { background: var(--text-muted); }
     .status-error .status-dot { background: var(--red); }
 
@@ -631,7 +632,7 @@
 
     async function submitDecisions(name) {
       const workflow = pipeline.workflows[name];
-      if (!workflow || workflow.status !== 'analyzed') return;
+      if (!workflow || workflow.status !== 'awaiting_decisions') return;
 
       const cs = getCtrlState(name);
       const findings = (workflow.analysis?.findings || []).filter(f => !isBlocker(f));
@@ -747,6 +748,17 @@
       const phase = pipeline.phase;
       const isDiscovering = phase === 'idle' || phase === 'discovering';
 
+      // Save DOM state before re-render
+      const askInput = document.getElementById('ask-input');
+      const savedAskValue = askInput ? askInput.value : '';
+      const savedAskFocused = askInput && document.activeElement === askInput;
+      const savedAskSelStart = askInput ? askInput.selectionStart : 0;
+      const savedAskSelEnd = askInput ? askInput.selectionEnd : 0;
+      const sidebar = document.querySelector('.sidebar');
+      const detailPanel = document.querySelector('.detail-panel');
+      const savedSidebarScroll = sidebar ? sidebar.scrollTop : 0;
+      const savedDetailScroll = detailPanel ? detailPanel.scrollTop : 0;
+
       app.innerHTML = `
         <header>
           <div style="display:flex;align-items:center;gap:1rem;">
@@ -770,13 +782,27 @@
           </div>
         </div>
       `;
+
+      // Restore DOM state after re-render
+      const newAskInput = document.getElementById('ask-input');
+      if (newAskInput && savedAskValue) {
+        newAskInput.value = savedAskValue;
+        if (savedAskFocused) {
+          newAskInput.focus();
+          newAskInput.setSelectionRange(savedAskSelStart, savedAskSelEnd);
+        }
+      }
+      const newSidebar = document.querySelector('.sidebar');
+      const newDetailPanel = document.querySelector('.detail-panel');
+      if (newSidebar) newSidebar.scrollTop = savedSidebarScroll;
+      if (newDetailPanel) newDetailPanel.scrollTop = savedDetailScroll;
     }
 
     function renderHeaderSummary() {
       const workflows = pipeline.workflows || {};
-      const phases = Object.values(workflows).map(w => w.phase);
+      const statuses = Object.values(workflows).map(w => w.status);
       const counts = {};
-      phases.forEach(p => counts[p] = (counts[p] || 0) + 1);
+      statuses.forEach(s => counts[s] = (counts[s] || 0) + 1);
 
       const parts = [];
       if (counts.analyzing)         parts.push(`<span class="count count-analyzing">${counts.analyzing} analyzing</span>`);
@@ -790,7 +816,7 @@
       if (counts.tests_failed)      parts.push(`<span class="count count-errored">${counts.tests_failed} tests failed</span>`);
       if (counts.ci_failed)         parts.push(`<span class="count count-errored">${counts.ci_failed} CI failed</span>`);
       if (counts.complete)          parts.push(`<span class="count count-complete">${counts.complete} complete</span>`);
-      if (counts.errored)           parts.push(`<span class="count count-errored">${counts.errored} errored</span>`);
+      if (counts.error)             parts.push(`<span class="count count-errored">${counts.error} error</span>`);
 
       return parts.length ? `<div class="header-summary">${parts.join('')}</div>` : '';
     }
@@ -818,7 +844,7 @@
 
     function renderSidebarItem(c) {
       const workflow = (pipeline.workflows || {})[c.name];
-      const workflowPhase = workflow ? workflow.phase : 'none';
+      const workflowStatus = workflow ? workflow.status : 'none';
       const isSelected = selectedController === c.name;
       const displayName = c.name.replace(/_controller$/, '');
 
@@ -828,7 +854,7 @@
 
       // Determine action buttons
       let actions = '';
-      const isActive = workflow && ['analyzing', 'hardening', 'testing', 'fixing_tests', 'ci_checking', 'fixing_ci', 'verifying'].includes(workflow.phase);
+      const isActive = workflow && ['analyzing', 'hardening', 'testing', 'fixing_tests', 'ci_checking', 'fixing_ci', 'verifying'].includes(workflow.status);
 
       if (!isActive) {
         if (c.existing_analysis_at) {
@@ -845,7 +871,7 @@
         <div class="sidebar-item ${isSelected ? 'selected' : ''}" onclick="selectController('${c.name}')">
           <div class="sidebar-item-header">
             <span style="display:flex;align-items:center;gap:0.4rem;">
-              <span class="workflow-dot ${workflowPhase}"></span>
+              <span class="workflow-dot ${workflowStatus}"></span>
               ${riskBadge}
               <span class="sidebar-item-name">${displayName}</span>
             </span>
@@ -885,7 +911,7 @@
     function renderWorkflowDetail(workflow) {
       const name = workflow.name;
       const cs = getCtrlState(name);
-      const isDecisionPhase = workflow.phase === 'awaiting_decisions';
+      const isDecisionPhase = workflow.status === 'awaiting_decisions';
       const allFindings = workflow.analysis?.findings || [];
       const blockers = allFindings.filter(f => isBlocker(f));
       const controllerFindings = allFindings.filter(f => !isBlocker(f));
@@ -916,7 +942,7 @@
           <div class="controller-header">
             <span>
               <span class="status-dot"></span>
-              <span style="font-size:0.85rem;color:var(--text-muted);">${workflow.status}</span>
+              <span style="font-size:0.85rem;color:var(--text-muted);">${displayStatus(workflow.status)}</span>
             </span>
             <span style="font-size: 0.8rem; color: var(--text-muted)">
               ${workflow.analysis?.overall_risk ? `risk: <span class="severity-${workflow.analysis.overall_risk}">${workflow.analysis.overall_risk}</span>` : ''}
@@ -942,7 +968,7 @@
 
           ${workflow.analysis?.notes ? `<div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;">${escapeHtml(workflow.analysis.notes)}</div>` : ''}
 
-          ${['analyzed', 'hardened', 'tested', 'tests_failed', 'ci_passed', 'ci_failed', 'verified'].includes(workflow.status) ? `
+          ${['awaiting_decisions', 'hardened', 'tested', 'tests_failed', 'ci_passed', 'ci_failed', 'complete'].includes(workflow.status) ? `
             <div class="ask-section">
               <input type="text" id="ask-input" placeholder="Ask a question about this controller..."
                 onkeydown="if(event.key==='Enter') askQuestion('${name}')" />
@@ -1311,6 +1337,19 @@
       }).catch(() => {
         showToast('Failed to copy');
       });
+    }
+
+    function displayStatus(status) {
+      const labels = {
+        'awaiting_decisions': 'awaiting decisions',
+        'fixing_tests': 'fixing tests',
+        'tests_failed': 'tests failed',
+        'ci_checking': 'CI checking',
+        'fixing_ci': 'fixing CI',
+        'ci_passed': 'CI passed',
+        'ci_failed': 'CI failed',
+      };
+      return labels[status] || status;
     }
 
     function escapeHtml(str) {

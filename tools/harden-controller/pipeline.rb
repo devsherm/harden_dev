@@ -1,22 +1,61 @@
 require "json"
 require "open3"
 require "fileutils"
+require "shellwords"
 require_relative "prompts"
 
 class Pipeline
-  ACTIVE_PHASES = %w[analyzing hardening testing fixing_tests ci_checking fixing_ci verifying].freeze
+  ACTIVE_STATUSES = %w[analyzing hardening testing fixing_tests ci_checking fixing_ci verifying].freeze
+  CLAUDE_TIMEOUT = 120
+  COMMAND_TIMEOUT = 60
 
   attr_reader :state
 
   def initialize(rails_root: ".")
     @rails_root = rails_root
     @mutex = Mutex.new
+    @threads = []
+    @cancelled = false
     @state = {
       phase: "idle",       # global: "idle" | "discovering" | "ready"
       controllers: [],     # discovery list (unchanged)
       workflows: {},       # keyed by controller name
       errors: []
     }
+  end
+
+  # ── Thread Management ────────────────────────────────────────
+
+  def safe_thread(workflow_name: nil, &block)
+    t = Thread.new do
+      block.call
+    rescue => e
+      if workflow_name
+        @mutex.synchronize do
+          wf = @state[:workflows][workflow_name]
+          if wf && wf[:status] != "error"
+            wf[:error] = e.message
+            wf[:status] = "error"
+            add_error("Thread failed for #{workflow_name}: #{e.message}")
+          end
+        end
+      end
+      $stderr.puts "[safe_thread] #{workflow_name || 'unnamed'} died: #{e.class}: #{e.message}"
+      $stderr.puts e.backtrace.first(5).join("\n")
+    end
+    @mutex.synchronize { @threads << t }
+    t
+  end
+
+  def cancelled?
+    @cancelled
+  end
+
+  def shutdown(timeout: 5)
+    @cancelled = true
+    threads = @mutex.synchronize { @threads.dup }
+    threads.each { |t| t.join(timeout) }
+    threads.each { |t| t.kill if t.alive? }
   end
 
   # ── Discovery ──────────────────────────────────────────────
@@ -120,8 +159,7 @@ class Pipeline
     @mutex.synchronize do
       workflow = @state[:workflows][name] ||= build_workflow(entry)
       workflow[:analysis] = parsed
-      workflow[:status] = "analyzed"
-      workflow[:phase] = "awaiting_decisions"
+      workflow[:status] = "awaiting_decisions"
     end
   end
 
@@ -131,7 +169,6 @@ class Pipeline
     source_path = ctrl_name = nil
     @mutex.synchronize do
       workflow = @state[:workflows][name]
-      workflow[:phase] = "analyzing"
       workflow[:status] = "analyzing"
       workflow[:started_at] = Time.now.iso8601
       workflow[:error] = nil
@@ -144,6 +181,7 @@ class Pipeline
       prompt = Prompts.analyze(ctrl_name, source)
 
       result = claude_call(prompt)
+      raise "Pipeline cancelled" if cancelled?
       parsed = parse_json_response(result)
 
       ensure_harden_dir(source_path)
@@ -152,8 +190,7 @@ class Pipeline
       @mutex.synchronize do
         wf = @state[:workflows][name]
         wf[:analysis] = parsed
-        wf[:status] = "analyzed"
-        wf[:phase] = "awaiting_decisions"
+        wf[:status] = "awaiting_decisions"
         wf[:prompts][:analyze] = prompt
       end
     rescue => e
@@ -161,7 +198,6 @@ class Pipeline
         wf = @state[:workflows][name]
         wf[:error] = e.message
         wf[:status] = "error"
-        wf[:phase] = "errored"
         add_error("Analysis failed for #{name}: #{e.message}")
       end
     end
@@ -187,12 +223,10 @@ class Pipeline
 
       if workflow[:decision] && workflow[:decision]["action"] == "skip"
         workflow[:status] = "skipped"
-        workflow[:phase] = "skipped"
         workflow[:completed_at] = Time.now.iso8601
         return
       end
 
-      workflow[:phase] = "hardening"
       workflow[:status] = "hardening"
       source_path = workflow[:full_path]
       ctrl_name = workflow[:name]
@@ -205,6 +239,7 @@ class Pipeline
 
       prompt = Prompts.harden(ctrl_name, source, analysis_json, decision)
       result = claude_call(prompt)
+      raise "Pipeline cancelled" if cancelled?
       parsed = parse_json_response(result)
 
       write_sidecar(source_path, "hardened.json", JSON.pretty_generate(parsed))
@@ -224,7 +259,6 @@ class Pipeline
         wf = @state[:workflows][name]
         wf[:error] = e.message
         wf[:status] = "error"
-        wf[:phase] = "errored"
         add_error("Hardening failed for #{name}: #{e.message}")
       end
       return
@@ -243,7 +277,6 @@ class Pipeline
     @mutex.synchronize do
       workflow = @state[:workflows][name]
       return unless workflow[:status] == "hardened"
-      workflow[:phase] = "testing"
       workflow[:status] = "testing"
       source_path = workflow[:full_path]
       ctrl_name = workflow[:name]
@@ -251,19 +284,20 @@ class Pipeline
 
     test_file = derive_test_path(source_path)
     test_cmd = if test_file && File.exist?(test_file)
-      "bin/rails test #{test_file}"
+      ["bin/rails", "test", test_file]
     else
-      "bin/rails test"
+      ["bin/rails", "test"]
     end
 
     attempts = []
     passed = false
 
     begin
-      output, status = Open3.capture2e(test_cmd, chdir: @rails_root)
-      attempts << { attempt: 1, command: test_cmd, passed: status.success?, output: output }
+      output, passed_run = spawn_with_timeout(*test_cmd, timeout: COMMAND_TIMEOUT, chdir: @rails_root)
+      raise "Pipeline cancelled" if cancelled?
+      attempts << { attempt: 1, command: test_cmd.join(" "), passed: passed_run, output: output }
 
-      if status.success?
+      if passed_run
         passed = true
       else
         # Attempt Claude-assisted fixes
@@ -271,7 +305,6 @@ class Pipeline
           analysis_json = nil
           @mutex.synchronize do
             wf = @state[:workflows][name]
-            wf[:phase] = "fixing_tests"
             wf[:status] = "fixing_tests"
             analysis_json = wf[:analysis].to_json
           end
@@ -280,6 +313,7 @@ class Pipeline
           prompt = Prompts.fix_tests(ctrl_name, hardened_source, output, analysis_json)
 
           fix_result = claude_call(prompt)
+          raise "Pipeline cancelled" if cancelled?
           parsed = parse_json_response(fix_result)
 
           @mutex.synchronize do
@@ -293,21 +327,21 @@ class Pipeline
           # Re-run tests
           @mutex.synchronize do
             wf = @state[:workflows][name]
-            wf[:phase] = "testing"
             wf[:status] = "testing"
           end
 
-          output, status = Open3.capture2e(test_cmd, chdir: @rails_root)
+          output, passed_run = spawn_with_timeout(*test_cmd, timeout: COMMAND_TIMEOUT, chdir: @rails_root)
+          raise "Pipeline cancelled" if cancelled?
           attempts << {
             attempt: i + 2,
-            command: test_cmd,
-            passed: status.success?,
+            command: test_cmd.join(" "),
+            passed: passed_run,
             output: output,
             fixes_applied: parsed["fixes_applied"],
             hardening_reverted: parsed["hardening_reverted"]
           }
 
-          if status.success?
+          if passed_run
             passed = true
             break
           end
@@ -323,10 +357,8 @@ class Pipeline
         wf[:test_results] = test_results
         if passed
           wf[:status] = "tested"
-          wf[:phase] = "tested"
         else
           wf[:status] = "tests_failed"
-          wf[:phase] = "tests_failed"
           add_error("Tests still failing for #{name} after #{attempts.length} attempt(s)")
           return
         end
@@ -336,7 +368,6 @@ class Pipeline
         wf = @state[:workflows][name]
         wf[:error] = e.message
         wf[:status] = "error"
-        wf[:phase] = "errored"
         add_error("Testing failed for #{name}: #{e.message}")
       end
       return
@@ -359,10 +390,10 @@ class Pipeline
   # ── Phase 3.75: CI Checking ──────────────────────────────
 
   CI_CHECKS = [
-    { name: "rubocop", cmd: ->(path) { "bin/rubocop #{path}" } },
-    { name: "brakeman", cmd: ->(_) { "bin/brakeman --quiet --no-pager --exit-on-warn --exit-on-error" } },
-    { name: "bundler-audit", cmd: ->(_) { "bin/bundler-audit" } },
-    { name: "importmap-audit", cmd: ->(_) { "bin/importmap audit" } }
+    { name: "rubocop", cmd: ->(path) { ["bin/rubocop", path] } },
+    { name: "brakeman", cmd: ->(_) { %w[bin/brakeman --quiet --no-pager --exit-on-warn --exit-on-error] } },
+    { name: "bundler-audit", cmd: ->(_) { %w[bin/bundler-audit] } },
+    { name: "importmap-audit", cmd: ->(_) { %w[bin/importmap audit] } }
   ].freeze
 
   def run_ci_checks(name)
@@ -370,7 +401,6 @@ class Pipeline
     @mutex.synchronize do
       workflow = @state[:workflows][name]
       return unless workflow[:status] == "tested"
-      workflow[:phase] = "ci_checking"
       workflow[:status] = "ci_checking"
       source_path = workflow[:full_path]
       ctrl_name = workflow[:name]
@@ -380,6 +410,7 @@ class Pipeline
     begin
       fix_attempts = []
       checks = run_all_ci_checks(controller_relative)
+      raise "Pipeline cancelled" if cancelled?
       passed = checks.all? { |c| c[:passed] }
 
       unless passed
@@ -387,7 +418,6 @@ class Pipeline
           analysis_json = nil
           @mutex.synchronize do
             wf = @state[:workflows][name]
-            wf[:phase] = "fixing_ci"
             wf[:status] = "fixing_ci"
             analysis_json = wf[:analysis].to_json
           end
@@ -400,6 +430,7 @@ class Pipeline
           prompt = Prompts.fix_ci(ctrl_name, hardened_source, failed_output, analysis_json)
 
           fix_result = claude_call(prompt)
+          raise "Pipeline cancelled" if cancelled?
           parsed = parse_json_response(fix_result)
 
           @mutex.synchronize do
@@ -418,11 +449,11 @@ class Pipeline
 
           @mutex.synchronize do
             wf = @state[:workflows][name]
-            wf[:phase] = "ci_checking"
             wf[:status] = "ci_checking"
           end
 
           checks = run_all_ci_checks(controller_relative)
+          raise "Pipeline cancelled" if cancelled?
           passed = checks.all? { |c| c[:passed] }
           break if passed
         end
@@ -441,10 +472,8 @@ class Pipeline
         wf[:ci_results] = ci_results
         if passed
           wf[:status] = "ci_passed"
-          wf[:phase] = "ci_passed"
         else
           wf[:status] = "ci_failed"
-          wf[:phase] = "ci_failed"
           add_error("CI checks still failing for #{name} after #{fix_attempts.length} fix attempt(s)")
           return
         end
@@ -454,7 +483,6 @@ class Pipeline
         wf = @state[:workflows][name]
         wf[:error] = e.message
         wf[:status] = "error"
-        wf[:phase] = "errored"
         add_error("CI checking failed for #{name}: #{e.message}")
       end
       return
@@ -481,7 +509,6 @@ class Pipeline
     @mutex.synchronize do
       workflow = @state[:workflows][name]
       return unless workflow[:status] == "ci_passed"
-      workflow[:phase] = "verifying"
       workflow[:status] = "verifying"
       source_path = workflow[:full_path]
       ctrl_name = workflow[:name]
@@ -493,6 +520,7 @@ class Pipeline
     begin
       prompt = Prompts.verify(ctrl_name, original_source, hardened_source, analysis_json)
       result = claude_call(prompt)
+      raise "Pipeline cancelled" if cancelled?
       parsed = parse_json_response(result)
 
       write_sidecar(source_path, "verification.json", JSON.pretty_generate(parsed))
@@ -500,8 +528,7 @@ class Pipeline
       @mutex.synchronize do
         wf = @state[:workflows][name]
         wf[:verification] = parsed
-        wf[:status] = "verified"
-        wf[:phase] = "complete"
+        wf[:status] = "complete"
         wf[:completed_at] = Time.now.iso8601
         wf[:prompts][:verify] = prompt
       end
@@ -510,7 +537,6 @@ class Pipeline
         wf = @state[:workflows][name]
         wf[:error] = e.message
         wf[:status] = "error"
-        wf[:phase] = "errored"
         add_error("Verification failed for #{name}: #{e.message}")
       end
     end
@@ -558,7 +584,7 @@ class Pipeline
     workflow = @mutex.synchronize { @state[:workflows][name] }
     return { error: "No workflow for #{name}" } unless workflow
 
-    Thread.new { run_analysis(name) }
+    safe_thread(workflow_name: name) { run_analysis(name) }
 
     { status: "retrying" }
   end
@@ -582,7 +608,6 @@ class Pipeline
       name: entry[:name],
       path: entry[:path],
       full_path: entry[:full_path],
-      phase: "pending",
       status: "pending",
       analysis: nil,
       decision: nil,
@@ -599,13 +624,42 @@ class Pipeline
   end
 
   def claude_call(prompt)
-    result, status = Open3.capture2e("claude", "-p", prompt)
+    output, success = spawn_with_timeout("claude", "-p", prompt, timeout: CLAUDE_TIMEOUT)
+    raise "claude -p failed: #{output[0..500]}" unless success
+    output.strip
+  end
 
-    unless status.success?
-      raise "claude -p failed (exit #{status.exitstatus}): #{result[0..500]}"
+  def spawn_with_timeout(*cmd, timeout:, chdir: nil)
+    rd, wr = IO.pipe
+    opts = { [:out, :err] => wr }
+    opts[:chdir] = chdir if chdir
+    pid = Process.spawn(*cmd, **opts)
+    wr.close
+
+    output = +""
+    reader = Thread.new { output << rd.read }
+
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    loop do
+      result = Process.wait2(pid, Process::WNOHANG)
+      if result
+        _, status = result
+        reader.join
+        return [output, status.success?]
+      end
+      if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline || cancelled?
+        Process.kill("TERM", pid) rescue nil
+        sleep 0.5
+        Process.kill("KILL", pid) rescue Errno::ESRCH
+        Process.wait2(pid) rescue nil
+        reason = cancelled? ? "Pipeline cancelled" : "Command timed out after #{timeout}s: #{cmd.join(' ')}"
+        raise reason
+      end
+      sleep 0.1
     end
-
-    result.strip
+  ensure
+    rd&.close unless rd&.closed?
+    reader&.join(2)
   end
 
   def parse_json_response(raw)
@@ -635,8 +689,8 @@ class Pipeline
   def run_all_ci_checks(controller_relative)
     CI_CHECKS.map do |check|
       cmd = check[:cmd].call(controller_relative)
-      output, status = Open3.capture2e(cmd, chdir: @rails_root)
-      { name: check[:name], command: cmd, passed: status.success?, output: output }
+      output, passed = spawn_with_timeout(*cmd, timeout: COMMAND_TIMEOUT, chdir: @rails_root)
+      { name: check[:name], command: cmd.join(" "), passed: passed, output: output }
     end
   end
 
