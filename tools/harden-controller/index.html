@@ -473,6 +473,55 @@
     .explanation-box ul, .explanation-box ol { padding-left: 1.2rem; margin: 0.4rem 0; }
     .explanation-box h1, .explanation-box h2, .explanation-box h3 { font-size: 0.95rem; margin: 0.6rem 0 0.3rem; }
 
+    .queries-section {
+      margin-top: 1rem;
+    }
+
+    .query-item {
+      margin-top: 0.6rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    .query-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.5rem 0.8rem;
+      background: var(--surface-hover);
+      font-size: 0.8rem;
+      gap: 0.6rem;
+    }
+
+    .query-question {
+      flex: 1;
+      font-style: italic;
+      color: var(--text-muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .query-status-pending { color: var(--accent); animation: pulse 1s infinite; }
+    .query-status-complete { color: var(--green); }
+    .query-status-error { color: var(--red); }
+
+    .query-body {
+      padding: 0.8rem;
+      background: var(--bg);
+      font-size: 0.85rem;
+      line-height: 1.5;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    .query-body p { margin: 0.4rem 0; }
+    .query-body pre { background: var(--surface); padding: 0.6rem; border-radius: 4px; overflow-x: auto; margin: 0.5rem 0; }
+    .query-body code { font-size: 0.8rem; }
+    .query-body ul, .query-body ol { padding-left: 1.2rem; margin: 0.4rem 0; }
+    .query-body h1, .query-body h2, .query-body h3 { font-size: 0.95rem; margin: 0.6rem 0 0.3rem; }
+
     .error-text { color: var(--red); font-size: 0.85rem; margin-top: 0.5rem; }
 
     .submit-bar {
@@ -540,19 +589,15 @@
   <script>
     // ── State ─────────────────────────────────────────────────
 
-    let pipeline = { phase: 'idle', controllers: [], workflows: {}, errors: [] };
+    let pipeline = { phase: 'idle', controllers: [], workflows: {}, errors: [], queries: [] };
     let selectedController = null;  // name of controller shown in detail panel
     let perController = {};         // per-controller client-side UI state
-    let loadingExplain = {};        // { "controller:finding_id": true }
-    let loadingAsk = {};            // { "controller": true }
 
     function getCtrlState(name) {
       if (!perController[name]) {
         perController[name] = {
           findingDecisions: {},
           dismissedBlockers: {},
-          explanations: {},
-          askAnswer: null,
           sourceViewOpen: false
         };
       }
@@ -602,8 +647,6 @@
     async function resetPipeline() {
       selectedController = null;
       perController = {};
-      loadingExplain = {};
-      loadingAsk = {};
       await apiFetch('/pipeline/reset', { method: 'POST' });
     }
 
@@ -655,19 +698,12 @@
     }
 
     async function explainFinding(name, findingId) {
-      const key = `${name}:${findingId}`;
-      loadingExplain[key] = true;
-      render();
-
-      const res = await apiFetch(`/explain/${findingId}`, {
+      await apiFetch(`/explain/${findingId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ controller: name })
       });
-      const data = await res.json();
-      getCtrlState(name).explanations[findingId] = data.explanation;
-      loadingExplain[key] = false;
-      render();
+      // Result arrives via SSE in pipeline.queries
     }
 
     async function askQuestion(name) {
@@ -675,18 +711,13 @@
       const question = input.value.trim();
       if (!question) return;
 
-      loadingAsk[name] = true;
-      render();
-
-      const res = await apiFetch('/ask', {
+      input.value = '';
+      await apiFetch('/ask', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ controller: name, question })
       });
-      const data = await res.json();
-      getCtrlState(name).askAnswer = data.answer;
-      loadingAsk[name] = false;
-      render();
+      // Result arrives via SSE in pipeline.queries
     }
 
     async function retryTests(name) {
@@ -785,8 +816,8 @@
 
       // Restore DOM state after re-render
       const newAskInput = document.getElementById('ask-input');
-      if (newAskInput && savedAskValue) {
-        newAskInput.value = savedAskValue;
+      if (newAskInput) {
+        if (savedAskValue) newAskInput.value = savedAskValue;
         if (savedAskFocused) {
           newAskInput.focus();
           newAskInput.setSelectionRange(savedAskSelStart, savedAskSelEnd);
@@ -859,16 +890,16 @@
       if (!isActive) {
         if (c.existing_analysis_at) {
           actions = `
-            <button class="primary" onclick="loadExistingAnalysis('${c.name}', event)">Use Existing</button>
-            <button onclick="analyzeController('${c.name}', event)">Re-analyze</button>
+            <button class="primary" onclick="loadExistingAnalysis('${escapeAttr(c.name)}', event)">Use Existing</button>
+            <button onclick="analyzeController('${escapeAttr(c.name)}', event)">Re-analyze</button>
           `;
         } else {
-          actions = `<button class="primary" onclick="analyzeController('${c.name}', event)">Analyze</button>`;
+          actions = `<button class="primary" onclick="analyzeController('${escapeAttr(c.name)}', event)">Analyze</button>`;
         }
       }
 
       return `
-        <div class="sidebar-item ${isSelected ? 'selected' : ''}" onclick="selectController('${c.name}')">
+        <div class="sidebar-item ${isSelected ? 'selected' : ''}" onclick="selectController('${escapeAttr(c.name)}')">
           <div class="sidebar-item-header">
             <span style="display:flex;align-items:center;gap:0.4rem;">
               <span class="workflow-dot ${workflowStatus}"></span>
@@ -919,11 +950,11 @@
 
       // Prompt copy buttons
       const promptButtons = [];
-      if (workflow.prompts?.analyze)   promptButtons.push(`<button class="small" onclick="copyPrompt('${name}', 'analyze')">Copy Analysis Prompt</button>`);
-      if (workflow.prompts?.harden)    promptButtons.push(`<button class="small" onclick="copyPrompt('${name}', 'harden')">Copy Harden Prompt</button>`);
-      if (workflow.prompts?.fix_tests) promptButtons.push(`<button class="small" onclick="copyPrompt('${name}', 'fix_tests')">Copy Fix Tests Prompt</button>`);
-      if (workflow.prompts?.fix_ci)    promptButtons.push(`<button class="small" onclick="copyPrompt('${name}', 'fix_ci')">Copy Fix CI Prompt</button>`);
-      if (workflow.prompts?.verify)    promptButtons.push(`<button class="small" onclick="copyPrompt('${name}', 'verify')">Copy Verify Prompt</button>`);
+      if (workflow.prompts?.analyze)   promptButtons.push(`<button class="small" onclick="copyPrompt('${escapeAttr(name)}', 'analyze')">Copy Analysis Prompt</button>`);
+      if (workflow.prompts?.harden)    promptButtons.push(`<button class="small" onclick="copyPrompt('${escapeAttr(name)}', 'harden')">Copy Harden Prompt</button>`);
+      if (workflow.prompts?.fix_tests) promptButtons.push(`<button class="small" onclick="copyPrompt('${escapeAttr(name)}', 'fix_tests')">Copy Fix Tests Prompt</button>`);
+      if (workflow.prompts?.fix_ci)    promptButtons.push(`<button class="small" onclick="copyPrompt('${escapeAttr(name)}', 'fix_ci')">Copy Fix CI Prompt</button>`);
+      if (workflow.prompts?.verify)    promptButtons.push(`<button class="small" onclick="copyPrompt('${escapeAttr(name)}', 'verify')">Copy Verify Prompt</button>`);
 
       let html = `
         <div class="detail-header">
@@ -949,7 +980,7 @@
             </span>
           </div>
 
-          ${workflow.error ? `<div class="error-text">${escapeHtml(workflow.error)} <button onclick="retryAnalysis('${name}')">Retry</button></div>` : ''}
+          ${workflow.error ? `<div class="error-text">${escapeHtml(workflow.error)} <button onclick="retryAnalysis('${escapeAttr(name)}')">Retry</button></div>` : ''}
 
           ${blockers.length ? `
             <div style="margin-top: 0.8rem;">
@@ -971,19 +1002,17 @@
           ${['awaiting_decisions', 'hardened', 'tested', 'tests_failed', 'ci_passed', 'ci_failed', 'complete'].includes(workflow.status) ? `
             <div class="ask-section">
               <input type="text" id="ask-input" placeholder="Ask a question about this controller..."
-                onkeydown="if(event.key==='Enter') askQuestion('${name}')" />
-              <button onclick="askQuestion('${name}')" ${loadingAsk[name] ? 'disabled' : ''}>
-                ${loadingAsk[name] ? '...' : 'Ask'}
-              </button>
+                onkeydown="if(event.key==='Enter') askQuestion('${escapeAttr(name)}')" />
+              <button onclick="askQuestion('${escapeAttr(name)}')">Ask</button>
             </div>
-            ${cs.askAnswer ? `<div class="explanation-box">${renderMarkdown(cs.askAnswer)}</div>` : ''}
+            ${renderQueries(name)}
           ` : ''}
 
           ${workflow.test_results ? renderTestResults(name, workflow.test_results) : ''}
 
           ${workflow.status === 'tests_failed' ? `
             <div style="margin-top: 0.5rem;">
-              <button class="primary" onclick="retryTests('${name}')">Retry Tests</button>
+              <button class="primary" onclick="retryTests('${escapeAttr(name)}')">Retry Tests</button>
             </div>
           ` : ''}
 
@@ -991,7 +1020,7 @@
 
           ${workflow.status === 'ci_failed' ? `
             <div style="margin-top: 0.5rem;">
-              <button class="primary" onclick="retryCi('${name}')">Retry CI</button>
+              <button class="primary" onclick="retryCi('${escapeAttr(name)}')">Retry CI</button>
             </div>
           ` : ''}
 
@@ -1016,7 +1045,7 @@
             <span class="decision-summary">
               ${undismissedCount > 0 ? `${undismissedCount} blocker${undismissedCount !== 1 ? 's' : ''} remaining · ` : ''}${approvedCount} of ${controllerFindings.length} findings approved
             </span>
-            <button class="primary" onclick="submitDecisions('${name}')"
+            <button class="primary" onclick="submitDecisions('${escapeAttr(name)}')"
               ${disabled ? 'disabled' : ''}>
               Harden (${approvedCount})
             </button>
@@ -1084,8 +1113,6 @@
 
     function renderFinding(name, finding, isDecisionPhase) {
       const approved = isFindingApproved(name, finding.id);
-      const cs = getCtrlState(name);
-      const explainKey = `${name}:${finding.id}`;
       return `
         <div class="finding ${!approved ? 'is-skipped' : ''}">
           <div class="finding-info">
@@ -1094,31 +1121,26 @@
               ${escapeHtml(finding.summary)}
             </div>
             <div class="finding-meta">
-              ${finding.category}${finding.action ? ` · #${finding.action}` : ''}
+              ${escapeHtml(finding.category || '')}${finding.action ? ` · #${escapeHtml(finding.action || '')}` : ''}
             </div>
           </div>
           <div class="finding-actions">
             ${isDecisionPhase ? `
               <button class="finding-toggle ${approved ? 'approved' : 'skipped'}"
-                onclick="toggleFinding('${name}', '${finding.id}')"
+                onclick="toggleFinding('${escapeAttr(name)}', '${escapeAttr(finding.id)}')"
                 title="${approved ? 'Click to skip' : 'Click to approve'}">
                 ${approved ? '&#10003;' : '&#10007;'}
               </button>
             ` : ''}
-            <button onclick="explainFinding('${name}', '${finding.id}')"
-              ${loadingExplain[explainKey] ? 'disabled' : ''}>
-              ${loadingExplain[explainKey] ? '...' : 'Explain'}
-            </button>
+            <button onclick="explainFinding('${escapeAttr(name)}', '${escapeAttr(finding.id)}')">Explain</button>
           </div>
         </div>
-        ${cs.explanations[finding.id] ? `<div class="explanation-box">${renderMarkdown(cs.explanations[finding.id])}</div>` : ''}
       `;
     }
 
     function renderBlocker(name, finding, isDecisionPhase) {
       const cs = getCtrlState(name);
       const isDismissed = !!cs.dismissedBlockers[finding.id];
-      const explainKey = `${name}:${finding.id}`;
       return `
         <div class="blocker-card scope-${finding.scope} ${isDismissed ? 'dismissed' : ''}">
           <div class="blocker-header">
@@ -1129,31 +1151,59 @@
                 ${escapeHtml(finding.summary)}
               </div>
               <div class="finding-meta">
-                ${finding.category}${finding.action ? ` · #${finding.action}` : ''}
+                ${escapeHtml(finding.category || '')}${finding.action ? ` · #${escapeHtml(finding.action || '')}` : ''}
               </div>
               ${finding.detail ? `<div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.3rem;">${escapeHtml(finding.detail)}</div>` : ''}
             </div>
             <div class="blocker-actions">
               ${isDecisionPhase ? `
                 ${isDismissed ? `
-                  <button onclick="undismissBlocker('${name}', '${finding.id}')">Undo</button>
+                  <button onclick="undismissBlocker('${escapeAttr(name)}', '${escapeAttr(finding.id)}')">Undo</button>
                 ` : `
-                  <button onclick="dismissBlocker('${name}', '${finding.id}')">Dismiss</button>
+                  <button onclick="dismissBlocker('${escapeAttr(name)}', '${escapeAttr(finding.id)}')">Dismiss</button>
                 `}
               ` : ''}
-              <button onclick="copyPlan('${name}', '${finding.id}')"
+              <button onclick="copyPlan('${escapeAttr(name)}', '${escapeAttr(finding.id)}')"
                 title="Copy plan prompt to clipboard">Copy Plan</button>
-              <button onclick="explainFinding('${name}', '${finding.id}')"
-                ${loadingExplain[explainKey] ? 'disabled' : ''}>
-                ${loadingExplain[explainKey] ? '...' : 'Explain'}
-              </button>
+              <button onclick="explainFinding('${escapeAttr(name)}', '${escapeAttr(finding.id)}')">Explain</button>
             </div>
           </div>
-          ${cs.explanations[finding.id] ? `<div class="explanation-box">${renderMarkdown(cs.explanations[finding.id])}</div>` : ''}
         </div>
       `;
     }
 
+
+    function renderQueries(controllerName) {
+      const queries = (pipeline.queries || []).filter(q => q.controller === controllerName);
+      if (!queries.length) return '';
+
+      return `
+        <div class="queries-section">
+          <div style="font-size:0.8rem; font-weight:600; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.4rem;">Queries</div>
+          ${queries.map(q => {
+            const label = q.type === 'explain'
+              ? `Explain: finding ${escapeHtml(q.finding_id || '')}`
+              : escapeHtml(q.question || '');
+            const statusClass = `query-status-${q.status}`;
+            const statusLabel = q.status === 'pending' ? '...' : (q.status === 'complete' ? 'done' : 'error');
+            return `
+              <div class="query-item">
+                <div class="query-header">
+                  <span class="query-question">${label}</span>
+                  <span class="${statusClass}">${statusLabel}</span>
+                </div>
+                ${q.status === 'complete' && q.result
+                  ? `<div class="query-body">${renderMarkdown(q.result)}</div>`
+                  : ''}
+                ${q.status === 'error' && q.error
+                  ? `<div class="query-body error-text">${escapeHtml(q.error)}</div>`
+                  : ''}
+              </div>
+            `;
+          }).join('')}
+        </div>
+      `;
+    }
 
     function renderTestResults(name, results) {
       const passed = results.passed;
@@ -1170,7 +1220,7 @@
           </div>
           ${attempts.map((a, i) => `
             <div class="test-attempt">
-              <div class="test-attempt-header" onclick="toggleTestAttempt('${name}', ${i})">
+              <div class="test-attempt-header" onclick="toggleTestAttempt('${escapeAttr(name)}', ${i})">
                 <span>
                   <span class="test-badge ${a.passed ? 'pass' : 'fail'}" style="font-size:0.65rem;">${a.passed ? 'PASS' : 'FAIL'}</span>
                   Attempt ${a.attempt}${a.fixes_applied ? ` (${a.fixes_applied.length} fix${a.fixes_applied.length !== 1 ? 'es' : ''})` : ''}
@@ -1207,7 +1257,7 @@
           </div>
           ${checks.map((c, i) => `
             <div class="test-attempt">
-              <div class="test-attempt-header" onclick="toggleCiCheck('${name}', ${i})">
+              <div class="test-attempt-header" onclick="toggleCiCheck('${escapeAttr(name)}', ${i})">
                 <span>
                   <span class="test-badge ${c.passed ? 'pass' : 'fail'}" style="font-size:0.65rem;">${c.passed ? 'PASS' : 'FAIL'}</span>
                   ${escapeHtml(c.name)} <span style="color:var(--text-muted); font-size:0.75rem;">${escapeHtml(c.command)}</span>
@@ -1224,7 +1274,7 @@
           <div style="margin-top:0.5rem; font-size:0.8rem; font-weight:600; color:var(--text-muted);">Fix Attempts (${fixAttempts.length})</div>
           ${fixAttempts.map((fa, i) => `
             <div class="test-attempt">
-              <div class="test-attempt-header" onclick="toggleCiFix('${name}', ${i})">
+              <div class="test-attempt-header" onclick="toggleCiFix('${escapeAttr(name)}', ${i})">
                 <span>Attempt ${fa.attempt}${fa.fixes_applied ? ` (${fa.fixes_applied.length} fix${fa.fixes_applied.length !== 1 ? 'es' : ''})` : ''}</span>
                 <span>${cs.ciFixOpen[i] ? '&#9662;' : '&#9656;'}</span>
               </div>
@@ -1299,11 +1349,11 @@
       const cs = getCtrlState(name);
       return `
         <div class="source-viewer">
-          <div class="source-viewer-header" onclick="toggleSourceView('${name}')">
+          <div class="source-viewer-header" onclick="toggleSourceView('${escapeAttr(name)}')">
             <span>${cs.sourceViewOpen ? '&#9662;' : '&#9656;'} Hardened source</span>
             <span style="display:flex; gap:0.5rem; align-items:center;">
               <span style="font-size:0.75rem; color:var(--text-muted);">Written to ${escapeHtml(path)}</span>
-              <button onclick="event.stopPropagation(); copyHardenedSource('${name}')">Copy</button>
+              <button onclick="event.stopPropagation(); copyHardenedSource('${escapeAttr(name)}')">Copy</button>
             </span>
           </div>
           ${cs.sourceViewOpen ? `<pre><code>${escapeHtml(source)}</code></pre>` : ''}
@@ -1357,6 +1407,10 @@
       const div = document.createElement('div');
       div.textContent = str;
       return div.innerHTML;
+    }
+
+    function escapeAttr(str) {
+      return String(str).replace(/&/g,'&amp;').replace(/'/g,'&#39;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     }
 
     function renderMarkdown(str) {

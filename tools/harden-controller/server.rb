@@ -102,9 +102,7 @@ end
 # Reset pipeline (re-discovers controllers)
 post "/pipeline/reset" do
   content_type :json
-  old_pipeline = $pipeline
-  $pipeline = Pipeline.new(rails_root: RAILS_ROOT)
-  old_pipeline.shutdown(timeout: 3)
+  $pipeline.reset!
   $pipeline.safe_thread { $pipeline.discover_controllers }
   { status: "reset" }.to_json
 end
@@ -113,6 +111,14 @@ end
 get "/pipeline/status" do
   content_type :json
   $pipeline.to_json
+end
+
+# Retrieve prompt for a specific controller and phase
+get "/pipeline/:name/prompts/:phase" do
+  content_type :json
+  prompt = $pipeline.get_prompt(params[:name], params[:phase].to_sym)
+  halt 404, { error: "No prompt found" }.to_json unless prompt
+  { controller: params[:name], phase: params[:phase], prompt: prompt }.to_json
 end
 
 # ── SSE Stream ───────────────────────────────────────────────
@@ -165,8 +171,9 @@ post "/ask" do
   question = body["question"]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
-  answer = $pipeline.ask_question(controller, question)
-  { controller: controller, question: question, answer: answer }.to_json
+  result = $pipeline.ask_question(controller, question)
+  status 202
+  result.to_json
 end
 
 # Explain a specific finding
@@ -177,8 +184,9 @@ post "/explain/:finding_id" do
   finding_id = params[:finding_id]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
-  explanation = $pipeline.explain_finding(controller, finding_id)
-  { controller: controller, finding_id: finding_id, explanation: explanation }.to_json
+  result = $pipeline.explain_finding(controller, finding_id)
+  status 202
+  result.to_json
 end
 
 # ── Retry Tests ─────────────────────────────────────────────
@@ -222,6 +230,10 @@ post "/pipeline/retry" do
   body = parse_json_body
   controller = body["controller"]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
+
+  workflow = $pipeline.state[:workflows][controller]
+  halt 404, { error: "No workflow for #{controller}" }.to_json unless workflow
+  halt 409, { error: "#{controller} is not in error state" }.to_json unless workflow[:status] == "error"
 
   result = $pipeline.retry_analysis(controller)
   result.to_json

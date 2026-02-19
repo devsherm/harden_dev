@@ -303,7 +303,7 @@ module Prompts
       approved = decision["approved_findings"]&.join(", ")
       "Only address these specific findings: #{approved}. Leave everything else unchanged."
     else
-      "Apply all suggested fixes."
+      raise ArgumentError, "Unknown decision action: #{decision["action"].inspect}"
     end
   end
 

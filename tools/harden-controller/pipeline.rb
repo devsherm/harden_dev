@@ -22,6 +22,8 @@ class Pipeline
       workflows: {},       # keyed by controller name
       errors: []
     }
+    @prompt_store = {}  # keyed by controller name → phase symbol
+    @queries = []  # [{id:, controller:, type:, question:, finding_id:, status:, result:, error:, created_at:}]
   end
 
   # ── Thread Management ────────────────────────────────────────
@@ -43,17 +45,22 @@ class Pipeline
       $stderr.puts "[safe_thread] #{workflow_name || 'unnamed'} died: #{e.class}: #{e.message}"
       $stderr.puts e.backtrace.first(5).join("\n")
     end
-    @mutex.synchronize { @threads << t }
+    @mutex.synchronize do
+      @threads.reject! { |t| !t.alive? }
+      @threads << t
+    end
     t
   end
 
   def cancelled?
-    @cancelled
+    @mutex.synchronize { @cancelled }
   end
 
   def shutdown(timeout: 5)
-    @cancelled = true
-    threads = @mutex.synchronize { @threads.dup }
+    threads = @mutex.synchronize do
+      @cancelled = true
+      @threads.dup
+    end
     threads.each { |t| t.join(timeout) }
     threads.each { |t| t.kill if t.alive? }
   end
@@ -191,7 +198,8 @@ class Pipeline
         wf = @state[:workflows][name]
         wf[:analysis] = parsed
         wf[:status] = "awaiting_decisions"
-        wf[:prompts][:analyze] = prompt
+        @prompt_store[name] ||= {}
+        @prompt_store[name][:analyze] = prompt
       end
     rescue => e
       @mutex.synchronize do
@@ -244,16 +252,19 @@ class Pipeline
 
       write_sidecar(source_path, "hardened.json", JSON.pretty_generate(parsed))
 
+      write_path = hardened_source_content = nil
       @mutex.synchronize do
         wf = @state[:workflows][name]
         wf[:original_source] = source
-        if parsed["hardened_source"]
-          safe_write(wf[:full_path], parsed["hardened_source"])
-        end
         wf[:hardened] = parsed
         wf[:status] = "hardened"
-        wf[:prompts][:harden] = prompt
+        write_path = wf[:full_path]
+        hardened_source_content = parsed["hardened_source"]
+        @prompt_store[name] ||= {}
+        @prompt_store[name][:harden] = prompt
       end
+
+      safe_write(write_path, hardened_source_content) if hardened_source_content
     rescue => e
       @mutex.synchronize do
         wf = @state[:workflows][name]
@@ -317,7 +328,8 @@ class Pipeline
           parsed = parse_json_response(fix_result)
 
           @mutex.synchronize do
-            @state[:workflows][name][:prompts][:fix_tests] = prompt
+            @prompt_store[name] ||= {}
+            @prompt_store[name][:fix_tests] = prompt
           end
 
           if parsed["hardened_source"]
@@ -434,7 +446,8 @@ class Pipeline
           parsed = parse_json_response(fix_result)
 
           @mutex.synchronize do
-            @state[:workflows][name][:prompts][:fix_ci] = prompt
+            @prompt_store[name] ||= {}
+            @prompt_store[name][:fix_ci] = prompt
           end
 
           if parsed["hardened_source"]
@@ -530,7 +543,8 @@ class Pipeline
         wf[:verification] = parsed
         wf[:status] = "complete"
         wf[:completed_at] = Time.now.iso8601
-        wf[:prompts][:verify] = prompt
+        @prompt_store[name] ||= {}
+        @prompt_store[name][:verify] = prompt
       end
     rescue => e
       @mutex.synchronize do
@@ -545,23 +559,48 @@ class Pipeline
   # ── Ad-hoc Queries ──────────────────────────────────────────
 
   def ask_question(name, question)
-    source_path = ctrl_name = analysis_json = nil
+    query_id = "ask_#{Time.now.to_f}"
     @mutex.synchronize do
       workflow = @state[:workflows][name]
       return { error: "No workflow for #{name}" } unless workflow
-      source_path = workflow[:full_path]
-      ctrl_name = workflow[:name]
-      analysis_json = (workflow[:analysis] || {}).to_json
+      @queries << { id: query_id, controller: name, type: "ask", question: question,
+                    finding_id: nil, status: "pending", result: nil, error: nil,
+                    created_at: Time.now.iso8601 }
     end
 
-    source = File.read(source_path)
-    prompt = Prompts.ask(ctrl_name, source, analysis_json, question)
+    safe_thread do
+      begin
+        source_path = ctrl_name = analysis_json = nil
+        @mutex.synchronize do
+          wf = @state[:workflows][name]
+          source_path = wf[:full_path]
+          ctrl_name = wf[:name]
+          analysis_json = (wf[:analysis] || {}).to_json
+        end
 
-    claude_call(prompt)
+        source = File.read(source_path)
+        prompt = Prompts.ask(ctrl_name, source, analysis_json, question)
+        answer = claude_call(prompt)
+
+        @mutex.synchronize do
+          q = @queries.find { |q| q[:id] == query_id }
+          q[:status] = "complete"
+          q[:result] = answer
+        end
+      rescue => e
+        @mutex.synchronize do
+          q = @queries.find { |q| q[:id] == query_id }
+          q[:status] = "error"
+          q[:error] = e.message
+        end
+      end
+    end
+
+    { query_id: query_id }
   end
 
   def explain_finding(name, finding_id)
-    source_path = ctrl_name = finding_json = nil
+    query_id = "explain_#{Time.now.to_f}"
     @mutex.synchronize do
       workflow = @state[:workflows][name]
       return { error: "No workflow for #{name}" } unless workflow
@@ -569,30 +608,78 @@ class Pipeline
       finding = workflow.dig(:analysis, "findings")&.find { |f| f["id"] == finding_id }
       return { error: "Finding not found" } unless finding
 
-      source_path = workflow[:full_path]
-      ctrl_name = workflow[:name]
-      finding_json = finding.to_json
+      @queries << { id: query_id, controller: name, type: "explain", question: nil,
+                    finding_id: finding_id, status: "pending", result: nil, error: nil,
+                    created_at: Time.now.iso8601 }
     end
 
-    source = File.read(source_path)
-    prompt = Prompts.explain(ctrl_name, source, finding_json)
+    safe_thread do
+      begin
+        source_path = ctrl_name = finding_json = nil
+        @mutex.synchronize do
+          wf = @state[:workflows][name]
+          finding = wf.dig(:analysis, "findings")&.find { |f| f["id"] == finding_id }
+          source_path = wf[:full_path]
+          ctrl_name = wf[:name]
+          finding_json = finding.to_json
+        end
 
-    claude_call(prompt)
+        source = File.read(source_path)
+        prompt = Prompts.explain(ctrl_name, source, finding_json)
+        explanation = claude_call(prompt)
+
+        @mutex.synchronize do
+          q = @queries.find { |q| q[:id] == query_id }
+          q[:status] = "complete"
+          q[:result] = explanation
+        end
+      rescue => e
+        @mutex.synchronize do
+          q = @queries.find { |q| q[:id] == query_id }
+          q[:status] = "error"
+          q[:error] = e.message
+        end
+      end
+    end
+
+    { query_id: query_id }
   end
 
   def retry_analysis(name)
-    workflow = @mutex.synchronize { @state[:workflows][name] }
-    return { error: "No workflow for #{name}" } unless workflow
+    @mutex.synchronize do
+      workflow = @state[:workflows][name]
+      return { error: "No workflow for #{name}" } unless workflow
+      return { error: "#{name} is not in error state" } unless workflow[:status] == "error"
+      workflow[:error] = nil
+    end
 
     safe_thread(workflow_name: name) { run_analysis(name) }
 
     { status: "retrying" }
   end
 
+  def reset!
+    shutdown(timeout: 3)
+    @mutex.synchronize do
+      @cancelled = false
+      @threads.clear
+      @state[:phase] = "idle"
+      @state[:controllers] = []
+      @state[:workflows] = {}
+      @state[:errors] = []
+      @prompt_store.clear
+      @queries.clear
+    end
+  end
+
   # ── Helpers ─────────────────────────────────────────────────
 
   def to_json(*args)
-    @mutex.synchronize { @state.to_json(*args) }
+    @mutex.synchronize { @state.merge(queries: @queries).to_json(*args) }
+  end
+
+  def get_prompt(controller_name, phase)
+    @mutex.synchronize { @prompt_store.dig(controller_name, phase) }
   end
 
   private
@@ -600,7 +687,7 @@ class Pipeline
   def find_controller(name)
     entry = @mutex.synchronize { @state[:controllers].find { |c| c[:name] == name } }
     raise "Controller not found: #{name}" unless entry
-    entry
+    entry.dup
   end
 
   def build_workflow(entry)
@@ -618,8 +705,7 @@ class Pipeline
       error: nil,
       started_at: nil,
       completed_at: nil,
-      original_source: nil,
-      prompts: { analyze: nil, harden: nil, fix_tests: nil, fix_ci: nil, verify: nil }
+      original_source: nil
     }
   end
 
