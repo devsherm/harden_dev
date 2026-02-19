@@ -51,15 +51,16 @@ class Blog::CommentsController < ApplicationController
 
   def toggle_like
     @blog_comment = Blog::Comment.find(params.expect(:id))
-    if @blog_comment.liked?
-      @blog_comment.unset!
-    else
-      @blog_comment.liked!
-    end
+    new_status = @blog_comment.liked? ? :unset : :liked
 
     respond_to do |format|
-      format.html { redirect_to blog_post_path(@blog_comment.post), status: :see_other }
-      format.json { render :show, status: :ok, location: @blog_comment }
+      if @blog_comment.update(like_status: new_status)
+        format.html { redirect_to blog_post_path(@blog_comment.post), status: :see_other }
+        format.json { render :show, status: :ok, location: @blog_comment }
+      else
+        format.html { redirect_to blog_post_path(@blog_comment.post), alert: "Could not update like.", status: :see_other }
+        format.json { render json: { errors: @blog_comment.errors.full_messages }, status: :unprocessable_entity }
+      end
     end
   end
 
