@@ -21,7 +21,7 @@
 
   <div>
     <%= form.label :topic, style: "display: block" %>
-    <%= form.text_field :topic %>
+    <%= form.select :topic, Blog::Post.topics.keys.map { |t| [t.titleize, t] }, { include_blank: "Select a topic (optional)" } %>
   </div>
 
   <div>

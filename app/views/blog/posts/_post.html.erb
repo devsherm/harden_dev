@@ -3,7 +3,7 @@
     <%= link_to post.title, post %>
     — by <%= post.user.name %>
     <% if post.topic.present? %>
-      | <%= post.topic %>
+      | <%= post.topic.titleize %>
     <% end %>
   </p>
 </div>

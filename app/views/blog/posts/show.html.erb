@@ -4,7 +4,7 @@
 
 <p>By <%= @blog_post.user.name %></p>
 <% if @blog_post.topic.present? %>
-  <p>Topic: <%= @blog_post.topic %></p>
+  <p>Topic: <%= @blog_post.topic.titleize %></p>
 <% end %>
 
 <div><%= @blog_post.body %></div>

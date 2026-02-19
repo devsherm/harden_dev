@@ -38,7 +38,7 @@ class Blog::PostsControllerTest < ActionDispatch::IntegrationTest
 
   test "should create blog_post" do
     assert_difference("Blog::Post.count") do
-      post blog_posts_url, params: { blog_post: { body: "New body", title: "New title", topic: "Rails" } }
+      post blog_posts_url, params: { blog_post: { body: "New body", title: "New title", topic: "framing" } }
     end
     assert_equal core_users(:alice).id, Blog::Post.last.user_id
     assert_redirected_to blog_post_url(Blog::Post.last)

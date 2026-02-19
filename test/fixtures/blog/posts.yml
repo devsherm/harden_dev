@@ -1,11 +1,11 @@
 one:
   title: First Post
   body: This is the first post body.
-  topic: Rails
+  topic: concrete
   user: alice
 
 two:
   title: Second Post
   body: This is the second post body.
-  topic: Design
+  topic: demolition
   user: bob
