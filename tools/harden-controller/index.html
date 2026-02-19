@@ -213,6 +213,68 @@
     .scope-module { background: #fb923c22; color: var(--orange); }
     .scope-app { background: #f8717122; color: var(--red); }
 
+    .source-viewer {
+      margin-top: 0.8rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    .source-viewer-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.5rem 0.8rem;
+      background: var(--surface-hover);
+      cursor: pointer;
+      font-size: 0.85rem;
+      user-select: none;
+    }
+
+    .source-viewer-header:hover { background: var(--border); }
+
+    .source-viewer pre {
+      margin: 0;
+      padding: 0.8rem;
+      background: var(--bg);
+      overflow-x: auto;
+      font-size: 0.8rem;
+      line-height: 1.5;
+      max-height: 500px;
+      overflow-y: auto;
+    }
+
+    .findings-addressed {
+      margin-top: 0.8rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+
+    .finding-status {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.6rem;
+      padding: 0.5rem 0.6rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-size: 0.85rem;
+    }
+
+    .finding-status-badge {
+      flex-shrink: 0;
+      padding: 0.15rem 0.5rem;
+      border-radius: 3px;
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .finding-status-badge.addressed { background: #22c55e22; color: var(--green); }
+    .finding-status-badge.not-addressed { background: #ef444422; color: var(--red); }
+    .finding-status-badge.partial { background: #f59e0b22; color: var(--yellow); }
+
     .copy-toast {
       position: fixed;
       bottom: 2rem;
@@ -350,6 +412,7 @@
     let askAnswer = null;       // single answer string
     let loadingExplain = {};    // { "finding_id": true }
     let loadingAsk = false;
+    let sourceViewOpen = false;
 
     // ── SSE Connection ────────────────────────────────────────
 
@@ -377,6 +440,7 @@
       dismissedBlockers = {};
       explanations = {};
       askAnswer = null;
+      sourceViewOpen = false;
       await fetch('/pipeline/reset', { method: 'POST' });
     }
 
@@ -721,13 +785,75 @@
 
     function renderVerification(v) {
       const rec = v.recommendation || 'review';
+      const screen = pipeline.screen;
+      const findingsAddressed = v.findings_addressed || [];
+      const analysisFindings = screen?.analysis?.findings || [];
+      const addressedCount = findingsAddressed.filter(f => f.addressed).length;
+
       return `
         <div class="verification-result verification-${rec}">
           <strong>Verification: ${rec}</strong>
+          ${findingsAddressed.length ? ` — ${addressedCount}/${findingsAddressed.length} findings addressed` : ''}
           ${v.notes ? `<div style="margin-top: 0.3rem; font-size: 0.8rem;">${escapeHtml(v.notes)}</div>` : ''}
           ${v.new_issues?.length ? `<div style="margin-top: 0.3rem; color: var(--red); font-size: 0.8rem;">New issues found: ${v.new_issues.length}</div>` : ''}
         </div>
+        ${findingsAddressed.length ? renderFindingsAddressed(findingsAddressed, analysisFindings) : ''}
+        ${screen?.hardened?.hardened_source ? renderSourceViewer(screen.hardened.hardened_source, screen.path) : ''}
       `;
+    }
+
+    function renderFindingsAddressed(findingsAddressed, analysisFindings) {
+      return `
+        <div class="findings-addressed">
+          ${findingsAddressed.map(fa => {
+            const original = analysisFindings.find(f => f.id === fa.finding_id);
+            const severity = original?.severity || 'medium';
+            const summary = original?.summary || fa.finding_id;
+            const status = fa.addressed ? 'addressed' : (fa.partial ? 'partial' : 'not-addressed');
+            const statusLabel = fa.addressed ? 'addressed' : (fa.partial ? 'partial' : 'not addressed');
+            return `
+              <div class="finding-status">
+                <span class="finding-status-badge ${status}">${statusLabel}</span>
+                <div style="flex:1;">
+                  <span class="severity-${severity}">[${severity}]</span>
+                  ${escapeHtml(summary)}
+                  ${fa.notes ? `<div style="font-size:0.8rem; color:var(--text-muted); margin-top:0.2rem;">${escapeHtml(fa.notes)}</div>` : ''}
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      `;
+    }
+
+    function renderSourceViewer(source, path) {
+      return `
+        <div class="source-viewer">
+          <div class="source-viewer-header" onclick="toggleSourceView()">
+            <span>${sourceViewOpen ? '▾' : '▸'} Hardened source</span>
+            <span style="display:flex; gap:0.5rem; align-items:center;">
+              <span style="font-size:0.75rem; color:var(--text-muted);">Written to ${escapeHtml(path)}</span>
+              <button onclick="event.stopPropagation(); copyHardenedSource()">Copy</button>
+            </span>
+          </div>
+          ${sourceViewOpen ? `<pre><code>${escapeHtml(source)}</code></pre>` : ''}
+        </div>
+      `;
+    }
+
+    function toggleSourceView() {
+      sourceViewOpen = !sourceViewOpen;
+      render();
+    }
+
+    function copyHardenedSource() {
+      const source = pipeline.screen?.hardened?.hardened_source;
+      if (!source) return;
+      copyToClipboard(source).then(() => {
+        showToast('Copied hardened source');
+      }).catch(() => {
+        showToast('Failed to copy — check browser permissions');
+      });
     }
 
 

@@ -128,6 +128,7 @@ class Pipeline
     begin
       screen[:status] = "hardening"
       source = File.read(screen[:full_path])
+      screen[:original_source] = source
       analysis_json = screen[:analysis].to_json
 
       prompt = Prompts.harden(screen[:name], source, analysis_json, screen[:decision])
@@ -137,7 +138,7 @@ class Pipeline
       write_sidecar(screen[:full_path], "hardened.json", result)
 
       if parsed["hardened_source"]
-        write_sidecar(screen[:full_path], "hardened_preview.rb", parsed["hardened_source"])
+        File.write(screen[:full_path], parsed["hardened_source"])
       end
 
       screen[:hardened] = parsed
@@ -161,7 +162,7 @@ class Pipeline
 
     begin
       screen[:status] = "verifying"
-      original_source = File.read(screen[:full_path])
+      original_source = screen[:original_source]
       hardened_source = screen.dig(:hardened, "hardened_source") || ""
       analysis_json = screen[:analysis].to_json
 
