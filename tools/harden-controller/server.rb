@@ -23,6 +23,14 @@ RAILS_ROOT = ENV.fetch("RAILS_ROOT", ".")
 
 $pipeline = Pipeline.new(rails_root: RAILS_ROOT)
 
+%w[INT TERM].each do |sig|
+  trap(sig) do
+    $stderr.puts "Caught #{sig}, shutting down..."
+    $pipeline.shutdown(timeout: 5)
+    exit
+  end
+end
+
 # Auto-discover controllers at startup so selection is the opening screen
 $pipeline.safe_thread { $pipeline.discover_controllers }
 
@@ -60,16 +68,16 @@ end
 # Analyze a single selected controller
 post "/pipeline/analyze" do
   content_type :json
-  halt 409, { error: "Discovery not complete" }.to_json unless $pipeline.state[:phase] == "ready"
+  halt 409, { error: "Discovery not complete" }.to_json unless $pipeline.phase == "ready"
 
   body = parse_json_body
   controller = body["controller"]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
   # Guard: workflow must not already be in an active status
-  workflow = $pipeline.state[:workflows][controller]
-  if workflow && Pipeline::ACTIVE_STATUSES.include?(workflow[:status])
-    halt 409, { error: "#{controller} is already #{workflow[:status]}" }.to_json
+  ws = $pipeline.workflow_status(controller)
+  if ws && Pipeline::ACTIVE_STATUSES.include?(ws)
+    halt 409, { error: "#{controller} is already #{ws}" }.to_json
   end
 
   $pipeline.safe_thread(workflow_name: controller) { $pipeline.select_controller(controller) }
@@ -80,15 +88,15 @@ end
 # Load existing analysis from sidecar file (skip re-running claude)
 post "/pipeline/load-analysis" do
   content_type :json
-  halt 409, { error: "Discovery not complete" }.to_json unless $pipeline.state[:phase] == "ready"
+  halt 409, { error: "Discovery not complete" }.to_json unless $pipeline.phase == "ready"
 
   body = parse_json_body
   controller = body["controller"]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
-  workflow = $pipeline.state[:workflows][controller]
-  if workflow && Pipeline::ACTIVE_STATUSES.include?(workflow[:status])
-    halt 409, { error: "#{controller} is already #{workflow[:status]}" }.to_json
+  ws = $pipeline.workflow_status(controller)
+  if ws && Pipeline::ACTIVE_STATUSES.include?(ws)
+    halt 409, { error: "#{controller} is already #{ws}" }.to_json
   end
 
   begin
@@ -136,7 +144,7 @@ get "/events" do
         last_json = current_json
       end
       sleep 0.5
-    rescue IOError
+    rescue IOError, Errno::EPIPE, Errno::ECONNRESET
       break
     end
   end
@@ -152,9 +160,9 @@ post "/decisions" do
   controller = body.delete("controller")
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
-  workflow = $pipeline.state[:workflows][controller]
-  halt 404, { error: "No workflow for #{controller}" }.to_json unless workflow
-  halt 409, { error: "#{controller} is not awaiting decisions" }.to_json unless workflow[:status] == "awaiting_decisions"
+  halt 404, { error: "No workflow for #{controller}" }.to_json unless $pipeline.workflow_exists?(controller)
+  ws = $pipeline.workflow_status(controller)
+  halt 409, { error: "#{controller} is not awaiting decisions" }.to_json unless ws == "awaiting_decisions"
 
   $pipeline.safe_thread(workflow_name: controller) { $pipeline.submit_decision(controller, body) }
 
@@ -197,9 +205,9 @@ post "/pipeline/retry-tests" do
   controller = body["controller"]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
-  workflow = $pipeline.state[:workflows][controller]
-  halt 404, { error: "No workflow for #{controller}" }.to_json unless workflow
-  halt 409, { error: "#{controller} is not in tests_failed state" }.to_json unless workflow[:status] == "tests_failed"
+  halt 404, { error: "No workflow for #{controller}" }.to_json unless $pipeline.workflow_exists?(controller)
+  ws = $pipeline.workflow_status(controller)
+  halt 409, { error: "#{controller} is not in tests_failed state" }.to_json unless ws == "tests_failed"
 
   $pipeline.safe_thread(workflow_name: controller) { $pipeline.retry_tests(controller) }
 
@@ -214,9 +222,9 @@ post "/pipeline/retry-ci" do
   controller = body["controller"]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
-  workflow = $pipeline.state[:workflows][controller]
-  halt 404, { error: "No workflow for #{controller}" }.to_json unless workflow
-  halt 409, { error: "#{controller} is not in ci_failed state" }.to_json unless workflow[:status] == "ci_failed"
+  halt 404, { error: "No workflow for #{controller}" }.to_json unless $pipeline.workflow_exists?(controller)
+  ws = $pipeline.workflow_status(controller)
+  halt 409, { error: "#{controller} is not in ci_failed state" }.to_json unless ws == "ci_failed"
 
   $pipeline.safe_thread(workflow_name: controller) { $pipeline.retry_ci(controller) }
 
@@ -231,9 +239,9 @@ post "/pipeline/retry" do
   controller = body["controller"]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
-  workflow = $pipeline.state[:workflows][controller]
-  halt 404, { error: "No workflow for #{controller}" }.to_json unless workflow
-  halt 409, { error: "#{controller} is not in error state" }.to_json unless workflow[:status] == "error"
+  halt 404, { error: "No workflow for #{controller}" }.to_json unless $pipeline.workflow_exists?(controller)
+  ws = $pipeline.workflow_status(controller)
+  halt 409, { error: "#{controller} is not in error state" }.to_json unless ws == "error"
 
   result = $pipeline.retry_analysis(controller)
   result.to_json
@@ -243,6 +251,10 @@ end
 
 post "/shutdown" do
   content_type :json
-  Thread.new { sleep 0.5; exit }
+  Thread.new do
+    sleep 0.1  # let response flush
+    $pipeline.shutdown(timeout: 5)
+    exit
+  end
   { status: "shutting_down" }.to_json
 end

@@ -8,8 +8,22 @@ class Pipeline
   ACTIVE_STATUSES = %w[analyzing hardening testing fixing_tests ci_checking fixing_ci verifying].freeze
   CLAUDE_TIMEOUT = 120
   COMMAND_TIMEOUT = 60
+  MAX_QUERIES = 50
 
-  attr_reader :state
+  # Synchronized accessors — never expose @state directly.
+  # Use workflow_status / workflow_data for route guards.
+
+  def phase
+    @mutex.synchronize { @state[:phase] }
+  end
+
+  def workflow_status(name)
+    @mutex.synchronize { @state[:workflows][name]&.[](:status) }
+  end
+
+  def workflow_exists?(name)
+    @mutex.synchronize { @state[:workflows].key?(name) }
+  end
 
   def initialize(rails_root: ".")
     @rails_root = rails_root
@@ -24,6 +38,8 @@ class Pipeline
     }
     @prompt_store = {}  # keyed by controller name → phase symbol
     @queries = []  # [{id:, controller:, type:, question:, finding_id:, status:, result:, error:, created_at:}]
+    @cached_json = nil
+    @last_serialized_at = 0
   end
 
   # ── Thread Management ────────────────────────────────────────
@@ -61,7 +77,11 @@ class Pipeline
       @cancelled = true
       @threads.dup
     end
-    threads.each { |t| t.join(timeout) }
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    threads.each do |t|
+      remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      t.join([remaining, 0].max)
+    end
     threads.each { |t| t.kill if t.alive? }
   end
 
@@ -566,6 +586,7 @@ class Pipeline
       @queries << { id: query_id, controller: name, type: "ask", question: question,
                     finding_id: nil, status: "pending", result: nil, error: nil,
                     created_at: Time.now.iso8601 }
+      prune_queries
     end
 
     safe_thread do
@@ -611,6 +632,7 @@ class Pipeline
       @queries << { id: query_id, controller: name, type: "explain", question: nil,
                     finding_id: finding_id, status: "pending", result: nil, error: nil,
                     created_at: Time.now.iso8601 }
+      prune_queries
     end
 
     safe_thread do
@@ -659,10 +681,13 @@ class Pipeline
   end
 
   def reset!
-    shutdown(timeout: 3)
+    shutdown(timeout: 5)
+    # Force-kill any stragglers — shutdown already attempted join + kill,
+    # but verify before clearing state.
     @mutex.synchronize do
-      @cancelled = false
+      @threads.each { |t| t.kill if t.alive? }
       @threads.clear
+      @cancelled = false
       @state[:phase] = "idle"
       @state[:controllers] = []
       @state[:workflows] = {}
@@ -675,7 +700,14 @@ class Pipeline
   # ── Helpers ─────────────────────────────────────────────────
 
   def to_json(*args)
-    @mutex.synchronize { @state.merge(queries: @queries).to_json(*args) }
+    @mutex.synchronize do
+      now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      if @cached_json.nil? || (now - @last_serialized_at) > 0.1
+        @cached_json = @state.merge(queries: @queries).to_json(*args)
+        @last_serialized_at = now
+      end
+      @cached_json
+    end
   end
 
   def get_prompt(controller_name, phase)
@@ -719,7 +751,7 @@ class Pipeline
     rd, wr = IO.pipe
     opts = { [:out, :err] => wr }
     opts[:chdir] = chdir if chdir
-    pid = Process.spawn(*cmd, **opts)
+    pid = Process.spawn(*cmd, **opts, pgroup: true)
     wr.close
 
     output = +""
@@ -730,13 +762,13 @@ class Pipeline
       result = Process.wait2(pid, Process::WNOHANG)
       if result
         _, status = result
-        reader.join
+        reader.join(timeout)
         return [output, status.success?]
       end
       if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline || cancelled?
-        Process.kill("TERM", pid) rescue nil
+        Process.kill("-TERM", pid) rescue nil
         sleep 0.5
-        Process.kill("KILL", pid) rescue Errno::ESRCH
+        Process.kill("-KILL", pid) rescue Errno::ESRCH
         Process.wait2(pid) rescue nil
         reason = cancelled? ? "Pipeline cancelled" : "Command timed out after #{timeout}s: #{cmd.join(' ')}"
         raise reason
@@ -763,6 +795,13 @@ class Pipeline
 
   def add_error(msg)
     @state[:errors] << { message: msg, at: Time.now.iso8601 }
+  end
+
+  # Drop oldest completed queries when over the cap (caller holds @mutex)
+  def prune_queries
+    return if @queries.length <= MAX_QUERIES
+    @queries.reject! { |q| q[:status] == "complete" || q[:status] == "error" }
+    @queries.shift while @queries.length > MAX_QUERIES
   end
 
   def safe_write(path, content)
