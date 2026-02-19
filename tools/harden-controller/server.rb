@@ -106,7 +106,7 @@ end
 
 # ── Phase 2: Human Decision ─────────────────────────────────
 
-# Submit decision for the active screen
+# Submit decision for the active controller
 # Body: { "action": "approve|selective|skip", "approved_findings": [...] }
 post "/decisions" do
   content_type :json
@@ -119,7 +119,7 @@ end
 
 # ── Ad-hoc Queries ──────────────────────────────────────────
 
-# Ask a free-form question about the active screen
+# Ask a free-form question about the active controller
 post "/ask" do
   content_type :json
   body = JSON.parse(request.body.read)

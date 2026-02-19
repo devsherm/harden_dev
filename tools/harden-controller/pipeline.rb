@@ -12,7 +12,7 @@ class Pipeline
     @state = {
       phase: "idle",
       controllers: [],
-      screen: nil,
+      controller: nil,
       errors: [],
       started_at: nil,
       completed_at: nil
@@ -56,7 +56,7 @@ class Pipeline
     entry = @state[:controllers].find { |c| c[:name] == name }
     raise "Controller not found: #{name}" unless entry
 
-    @state[:screen] = build_screen(entry)
+    @state[:controller] = build_controller(entry)
     run_analysis
   end
 
@@ -67,12 +67,12 @@ class Pipeline
     analysis_file = sidecar_path(entry[:full_path], "analysis.json")
     raise "No existing analysis for #{name}" unless File.exist?(analysis_file)
 
-    @state[:screen] = build_screen(entry)
+    @state[:controller] = build_controller(entry)
 
     raw = File.read(analysis_file)
     parsed = parse_json_response(raw)
-    @state[:screen][:analysis] = parsed
-    @state[:screen][:status] = "analyzed"
+    @state[:controller][:analysis] = parsed
+    @state[:controller][:status] = "analyzed"
     @state[:phase] = "awaiting_decisions"
   end
 
@@ -81,25 +81,25 @@ class Pipeline
   def run_analysis
     @state[:phase] = "analyzing"
     @state[:started_at] = Time.now.iso8601
-    screen = @state[:screen]
+    controller = @state[:controller]
 
     begin
-      screen[:status] = "analyzing"
-      source = File.read(screen[:full_path])
-      prompt = Prompts.analyze(screen[:name], source)
+      controller[:status] = "analyzing"
+      source = File.read(controller[:full_path])
+      prompt = Prompts.analyze(controller[:name], source)
 
       result = claude_call(prompt)
       parsed = parse_json_response(result)
 
-      ensure_harden_dir(screen[:full_path])
-      write_sidecar(screen[:full_path], "analysis.json", result)
+      ensure_harden_dir(controller[:full_path])
+      write_sidecar(controller[:full_path], "analysis.json", result)
 
-      screen[:analysis] = parsed
-      screen[:status] = "analyzed"
+      controller[:analysis] = parsed
+      controller[:status] = "analyzed"
     rescue => e
-      screen[:error] = e.message
-      screen[:status] = "error"
-      add_error("Analysis failed for #{screen[:name]}: #{e.message}")
+      controller[:error] = e.message
+      controller[:status] = "error"
+      add_error("Analysis failed for #{controller[:name]}: #{e.message}")
     end
 
     @state[:phase] = "awaiting_decisions"
@@ -108,7 +108,7 @@ class Pipeline
   # ── Phase 2: Accept Decision ────────────────────────────────
 
   def submit_decision(decision)
-    @state[:screen][:decision] = decision
+    @state[:controller][:decision] = decision
     run_hardening
   end
 
@@ -116,37 +116,37 @@ class Pipeline
 
   def run_hardening
     @state[:phase] = "hardening"
-    screen = @state[:screen]
+    controller = @state[:controller]
 
-    if screen[:decision] && screen[:decision]["action"] == "skip"
-      screen[:status] = "skipped"
+    if controller[:decision] && controller[:decision]["action"] == "skip"
+      controller[:status] = "skipped"
       @state[:phase] = "complete"
       @state[:completed_at] = Time.now.iso8601
       return
     end
 
     begin
-      screen[:status] = "hardening"
-      source = File.read(screen[:full_path])
-      screen[:original_source] = source
-      analysis_json = screen[:analysis].to_json
+      controller[:status] = "hardening"
+      source = File.read(controller[:full_path])
+      controller[:original_source] = source
+      analysis_json = controller[:analysis].to_json
 
-      prompt = Prompts.harden(screen[:name], source, analysis_json, screen[:decision])
+      prompt = Prompts.harden(controller[:name], source, analysis_json, controller[:decision])
       result = claude_call(prompt)
       parsed = parse_json_response(result)
 
-      write_sidecar(screen[:full_path], "hardened.json", result)
+      write_sidecar(controller[:full_path], "hardened.json", result)
 
       if parsed["hardened_source"]
-        File.write(screen[:full_path], parsed["hardened_source"])
+        File.write(controller[:full_path], parsed["hardened_source"])
       end
 
-      screen[:hardened] = parsed
-      screen[:status] = "hardened"
+      controller[:hardened] = parsed
+      controller[:status] = "hardened"
     rescue => e
-      screen[:error] = e.message
-      screen[:status] = "error"
-      add_error("Hardening failed for #{screen[:name]}: #{e.message}")
+      controller[:error] = e.message
+      controller[:status] = "error"
+      add_error("Hardening failed for #{controller[:name]}: #{e.message}")
     end
 
     run_verification
@@ -156,28 +156,28 @@ class Pipeline
 
   def run_verification
     @state[:phase] = "verifying"
-    screen = @state[:screen]
+    controller = @state[:controller]
 
-    return unless screen[:status] == "hardened"
+    return unless controller[:status] == "hardened"
 
     begin
-      screen[:status] = "verifying"
-      original_source = screen[:original_source]
-      hardened_source = screen.dig(:hardened, "hardened_source") || ""
-      analysis_json = screen[:analysis].to_json
+      controller[:status] = "verifying"
+      original_source = controller[:original_source]
+      hardened_source = controller.dig(:hardened, "hardened_source") || ""
+      analysis_json = controller[:analysis].to_json
 
-      prompt = Prompts.verify(screen[:name], original_source, hardened_source, analysis_json)
+      prompt = Prompts.verify(controller[:name], original_source, hardened_source, analysis_json)
       result = claude_call(prompt)
       parsed = parse_json_response(result)
 
-      write_sidecar(screen[:full_path], "verification.json", result)
+      write_sidecar(controller[:full_path], "verification.json", result)
 
-      screen[:verification] = parsed
-      screen[:status] = "verified"
+      controller[:verification] = parsed
+      controller[:status] = "verified"
     rescue => e
-      screen[:error] = e.message
-      screen[:status] = "error"
-      add_error("Verification failed for #{screen[:name]}: #{e.message}")
+      controller[:error] = e.message
+      controller[:status] = "error"
+      add_error("Verification failed for #{controller[:name]}: #{e.message}")
     end
 
     @state[:phase] = "complete"
@@ -187,49 +187,49 @@ class Pipeline
   # ── Ad-hoc Queries ─────────────────────────────────────────
 
   def ask_question(question)
-    screen = @state[:screen]
-    return { error: "No active screen" } unless screen
+    controller = @state[:controller]
+    return { error: "No active controller" } unless controller
 
-    source = File.read(screen[:full_path])
-    analysis_json = (screen[:analysis] || {}).to_json
-    prompt = Prompts.ask(screen[:name], source, analysis_json, question)
+    source = File.read(controller[:full_path])
+    analysis_json = (controller[:analysis] || {}).to_json
+    prompt = Prompts.ask(controller[:name], source, analysis_json, question)
 
     claude_call(prompt)
   end
 
   def explain_finding(finding_id)
-    screen = @state[:screen]
-    return { error: "No active screen" } unless screen
+    controller = @state[:controller]
+    return { error: "No active controller" } unless controller
 
-    finding = screen.dig(:analysis, "findings")&.find { |f| f["id"] == finding_id }
+    finding = controller.dig(:analysis, "findings")&.find { |f| f["id"] == finding_id }
     return { error: "Finding not found" } unless finding
 
-    source = File.read(screen[:full_path])
-    prompt = Prompts.explain(screen[:name], source, finding.to_json)
+    source = File.read(controller[:full_path])
+    prompt = Prompts.explain(controller[:name], source, finding.to_json)
 
     claude_call(prompt)
   end
 
   def retry_analysis
-    screen = @state[:screen]
-    return { error: "No active screen" } unless screen
+    controller = @state[:controller]
+    return { error: "No active controller" } unless controller
 
     Thread.new do
       begin
-        screen[:error] = nil
-        screen[:status] = "analyzing"
-        source = File.read(screen[:full_path])
-        prompt = Prompts.analyze(screen[:name], source)
+        controller[:error] = nil
+        controller[:status] = "analyzing"
+        source = File.read(controller[:full_path])
+        prompt = Prompts.analyze(controller[:name], source)
 
         result = claude_call(prompt)
         parsed = parse_json_response(result)
 
-        write_sidecar(screen[:full_path], "analysis.json", result)
-        screen[:analysis] = parsed
-        screen[:status] = "analyzed"
+        write_sidecar(controller[:full_path], "analysis.json", result)
+        controller[:analysis] = parsed
+        controller[:status] = "analyzed"
       rescue => e
-        screen[:error] = e.message
-        screen[:status] = "error"
+        controller[:error] = e.message
+        controller[:status] = "error"
       end
     end
 
@@ -238,8 +238,8 @@ class Pipeline
 
   # ── Helpers ────────────────────────────────────────────────
 
-  def screen
-    @state[:screen]
+  def controller
+    @state[:controller]
   end
 
   def to_json
@@ -248,7 +248,7 @@ class Pipeline
 
   private
 
-  def build_screen(entry)
+  def build_controller(entry)
     {
       name: entry[:name],
       path: entry[:path],

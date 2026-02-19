@@ -31,7 +31,7 @@ module Prompts
       Respond with ONLY this JSON (no markdown fences, no preamble):
 
       {
-        "screen": "#{controller_name}",
+        "controller": "#{controller_name}",
         "status": "analyzed",
         "findings": [
           {
@@ -79,7 +79,7 @@ module Prompts
       Respond with ONLY this JSON (no markdown fences, no preamble):
 
       {
-        "screen": "#{controller_name}",
+        "controller": "#{controller_name}",
         "status": "hardened",
         "changes_applied": [
           {
@@ -128,7 +128,7 @@ module Prompts
       Respond with ONLY this JSON (no markdown fences, no preamble):
 
       {
-        "screen": "#{controller_name}",
+        "controller": "#{controller_name}",
         "status": "verified",
         "findings_addressed": [
           { "finding_id": "finding_001", "addressed": true, "notes": "" }
@@ -141,7 +141,7 @@ module Prompts
     PROMPT
   end
 
-  # Ad-hoc: Answer a question about a screen
+  # Ad-hoc: Answer a question about a controller
   def self.ask(controller_name, controller_source, analysis_json, question)
     <<~PROMPT
       You are a Rails security specialist. Answer this question about a controller.
