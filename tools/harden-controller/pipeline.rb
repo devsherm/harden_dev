@@ -276,8 +276,16 @@ class Pipeline
   def parse_json_response(raw)
     cleaned = raw.gsub(/\A```json\s*/, "").gsub(/\s*```\z/, "").strip
     JSON.parse(cleaned)
-  rescue JSON::ParserError => e
-    { "parse_error" => e.message, "raw_response" => raw[0..1000] }
+  rescue JSON::ParserError
+    # Claude sometimes emits preamble text before the JSON object —
+    # extract the outermost { ... } and retry.
+    start = raw.index("{")
+    finish = raw.rindex("}")
+    if start && finish && finish > start
+      JSON.parse(raw[start..finish])
+    else
+      { "parse_error" => "No JSON object found in response", "raw_response" => raw[0..1000] }
+    end
   end
 
   def add_error(msg)
