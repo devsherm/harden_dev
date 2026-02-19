@@ -4,75 +4,95 @@
   "findings": [
     {
       "id": "finding_001",
-      "severity": "medium",
+      "severity": "high",
       "category": "authorization",
       "scope": "controller",
-      "action": "create",
-      "summary": "No guard preventing already-authenticated users from creating additional accounts",
-      "detail": "The controller has no before_action to redirect authenticated users away from the registration flow. A logged-in user can hit both `new` and `create` to register additional accounts, which could be used for abuse (sock puppets, quota manipulation). Most registration controllers include a check like `redirect_to root_path if authenticated?` to prevent this.",
-      "suggested_fix": "Add a before_action that redirects already-authenticated users: `before_action :redirect_if_authenticated` that checks the current session and redirects to root_path with a notice if a user is already signed in."
+      "action": null,
+      "summary": "Missing allow_unauthenticated_access declaration",
+      "detail": "If ApplicationController or a parent defines a before_action for authentication (e.g., :require_login), this controller will block unauthenticated visitors from reaching the registration form. Registration must be accessible without a session. Even if no global auth filter exists today, adding one later will silently break registration unless this controller explicitly opts out.",
+      "suggested_fix": "Add `allow_unauthenticated_access` (Rails 8 Authentication) or `skip_before_action :authenticate` at the top of the controller to make the intent explicit and future-proof."
     },
     {
       "id": "finding_002",
       "severity": "medium",
-      "category": "info_leak",
-      "scope": "module",
+      "category": "authorization",
+      "scope": "controller",
       "action": "create",
-      "summary": "Potential user enumeration via validation error messages on failed registration",
-      "detail": "When `@user.save` fails, the controller re-renders the `new` form with `@user.errors` attached. If the User model has a uniqueness validation on `:name`, the error message (e.g., 'Name has already been taken') confirms that a given name exists in the system. An attacker can enumerate valid usernames by submitting registration attempts and inspecting the error responses, even with rate limiting in place (5 attempts/minute still allows significant enumeration over time).",
-      "suggested_fix": "Use a generic error message for uniqueness violations at the model level (e.g., `message: 'is unavailable'`), or normalize all validation failure responses so they don't distinguish between 'name taken' and other errors. Alternatively, add an email-based flow where registration always appears to succeed and confirmation is sent only if the name is available."
+      "summary": "Authenticated users can create additional accounts",
+      "detail": "There is no guard preventing an already-logged-in user from hitting POST /registrations and creating a second account. Depending on the application, this may enable abuse (sock-puppet accounts, quota evasion). At minimum it is an unnecessary attack surface.",
+      "suggested_fix": "Add a before_action that redirects authenticated users away: `before_action :redirect_if_authenticated` that checks `Current.user` or equivalent and redirects to root_path with a notice."
     },
     {
       "id": "finding_003",
       "severity": "medium",
-      "category": "other",
+      "category": "info_leak",
       "scope": "module",
       "action": "create",
-      "summary": "Immediate session creation with no email verification or second-factor step",
-      "detail": "`start_session(@user)` is called immediately after `@user.save`, granting full access without any verification step. There is no email confirmation, CAPTCHA challenge, or admin approval gate. This means automated or malicious registrations gain immediate access to authenticated features. Combined with the 5-per-minute rate limit, an attacker can still create 300 fully-active accounts per hour from a single IP.",
-      "suggested_fix": "Introduce an email verification step before granting a full session. After `@user.save`, send a confirmation email and either (a) do not call `start_session` until the email is confirmed, or (b) start a limited session that restricts access until verification is complete."
+      "summary": "User enumeration via validation error messages",
+      "detail": "When @user.save fails and :new is re-rendered, ActiveRecord validation errors are displayed to the user. If the User model has a uniqueness validation on :name (or :email if added later), error messages like 'Name has already been taken' confirm the existence of accounts, enabling enumeration attacks.",
+      "suggested_fix": "Use a generic error message for uniqueness violations rather than revealing which field collided. Alternatively, normalize the response: always show the same generic flash message on failure regardless of the underlying validation error, and log specifics server-side."
     },
     {
       "id": "finding_004",
       "severity": "medium",
       "category": "validation",
       "scope": "module",
-      "action": null,
-      "summary": "No email or unique contact identifier collected during registration",
-      "detail": "The registration params only collect `:name`, `:password`, and `:password_confirmation`. Without an email address or other unique contact identifier, there is no channel for password recovery, account verification, or security notifications (e.g., alerting on suspicious login). This also means the only credential recovery path would be an admin reset, which doesn't scale and is itself a social engineering vector.",
-      "suggested_fix": "Add an `:email` field to the registration params and User model with format and uniqueness validations. Use it for account verification, password reset, and security notifications."
+      "action": "create",
+      "summary": "No visible password complexity or length enforcement",
+      "detail": "The controller permits :password and :password_confirmation but nothing enforces minimum length or complexity. If the Core::User model lacks has_secure_password's minimum: option or custom validations, users can register with trivially weak passwords (e.g., '1'). has_secure_password defaults to a minimum of 72-byte max but no minimum length beyond presence.",
+      "suggested_fix": "In the Core::User model, add `validates :password, length: { minimum: 10 }` (or use has_secure_password's `password_challenge` with a minimum). Consider also rejecting known-breached passwords via a library like pwned."
     },
     {
       "id": "finding_005",
-      "severity": "low",
+      "severity": "medium",
       "category": "rate_limiting",
       "scope": "controller",
-      "action": "new",
-      "summary": "The `new` action is not rate-limited, allowing form-page flooding",
-      "detail": "Rate limiting is applied only to `:create`. The `new` action can be hit without limit, which allows an attacker to generate excessive server-side rendering load (view compilation, CSRF token generation, session creation). While lower severity than unrestricted `create`, it still enables resource exhaustion if the form view is expensive to render.",
-      "suggested_fix": "Extend the rate_limit to include `:new`, or add a separate, more permissive rate limit for it: `rate_limit to: 20, within: 1.minute, only: :new`."
+      "action": "create",
+      "summary": "Rate limit is IP-only and easily bypassed",
+      "detail": "The rate_limit (5 requests/minute) keys on IP by default. Attackers using rotating proxies, botnets, or IPv6 rotation bypass this trivially. Additionally, 5 registrations per minute from one IP is generous — legitimate users rarely need more than 1.",
+      "suggested_fix": "Tighten the limit to 3 per 5 minutes. Consider adding a secondary rate-limit dimension keyed on a fingerprint or the submitted name value (to prevent rapid enumeration of a single name). Adding CAPTCHA (e.g., reCAPTCHA or Turnstile) after the first failed attempt provides a complementary defense."
     },
     {
       "id": "finding_006",
       "severity": "low",
-      "category": "other",
-      "scope": "app",
-      "action": "create",
-      "summary": "No bot or automated-registration protection beyond IP-based rate limiting",
-      "detail": "The only abuse prevention is `rate_limit to: 5, within: 1.minute`, which is IP-based. Attackers using rotating proxies, botnets, or IPv6 ranges can trivially bypass this. There is no CAPTCHA, proof-of-work challenge, honeypot field, or JavaScript fingerprinting to distinguish automated submissions from real users.",
-      "suggested_fix": "Add a layered defense: (1) a honeypot hidden field that bots will fill but humans won't, (2) a CAPTCHA (e.g., reCAPTCHA or hCaptcha) on the registration form triggered after suspicious patterns, or (3) a proof-of-work challenge. The honeypot approach is the least intrusive and can be added at the controller level."
+      "category": "rate_limiting",
+      "scope": "controller",
+      "action": "new",
+      "summary": "The new action is not rate-limited",
+      "detail": "The rate_limit applies only to :create. An attacker can scrape the registration form at high volume (to harvest CSRF tokens or probe for WAF behavior) without triggering any limit.",
+      "suggested_fix": "Extend rate limiting to cover :new as well, or add a broader rate_limit at a higher threshold for all actions: `rate_limit to: 20, within: 1.minute`."
     },
     {
       "id": "finding_007",
+      "severity": "medium",
+      "category": "other",
+      "scope": "module",
+      "action": "create",
+      "summary": "Immediate session grant without email verification",
+      "detail": "start_session(@user) is called immediately after save, granting full access with no email confirmation step. This means anyone can register with a fake identity and immediately access authenticated features. It also makes account recovery harder since there is no verified contact channel.",
+      "suggested_fix": "Add an email (or other contact) field and require verification before granting a full session. After registration, set a limited-privilege session or no session, send a confirmation token, and only call start_session after verification."
+    },
+    {
+      "id": "finding_008",
       "severity": "low",
       "category": "other",
       "scope": "controller",
       "action": "create",
       "summary": "No audit logging of registration attempts",
-      "detail": "Neither successful nor failed registration attempts are logged beyond the default Rails request log. There is no structured record of who registered, from which IP, or how many failed attempts preceded a success. This limits incident response capability — if a wave of fake accounts is discovered, there is no efficient way to correlate registration events or identify the attack window.",
-      "suggested_fix": "Add structured logging for registration events: log IP address, user agent, and outcome (success/failure with reason) on every `create` attempt. Example: `Rails.logger.info({ event: 'registration', ip: request.remote_ip, success: @user.persisted?, errors: @user.errors.attribute_names })`."
+      "detail": "Neither successful nor failed registration attempts are logged. This makes it difficult to detect credential-stuffing campaigns, mass account creation, or brute-force enumeration in production. Rails request logs capture the route but not the outcome or submitted name.",
+      "suggested_fix": "Add Rails.logger.info or a structured log entry for both success and failure paths, including the submitted name (but never the password). Example: `Rails.logger.info(\"Registration succeeded\", name: @user.name, ip: request.remote_ip)`."
+    },
+    {
+      "id": "finding_009",
+      "severity": "low",
+      "category": "params",
+      "scope": "controller",
+      "action": "create",
+      "summary": "No :email field in permitted params",
+      "detail": "The registration only accepts :name, :password, and :password_confirmation. Without an email address or other unique contact identifier, there is no channel for password recovery, no way to verify identity, and the :name field becomes the sole login identifier — which is atypical and limits future security options (MFA, breach notifications, etc.).",
+      "suggested_fix": "Add :email to the permitted params and the corresponding model validations (presence, format, uniqueness with case-insensitive comparison). This is a prerequisite for email verification (finding_007)."
     }
   ],
   "overall_risk": "medium",
-  "notes": "The controller follows Rails 8 conventions well — `params.expect` for strong params, proper status codes, and rate limiting on the write action. The main gaps are (1) no verification step before granting a full session, (2) no email for recovery/verification, and (3) no guard against authenticated users re-registering. The rate limiting is a good start but is easily bypassed without complementary bot defenses. The core CRUD mechanics (CSRF, redirect safety, param filtering) are solid."
+  "notes": "The controller is concise and follows Rails 8 conventions well (params.expect, built-in rate_limit). The core structure is sound. The primary risks are: (1) the missing unauthenticated-access declaration which will break registration if a global auth filter is added, (2) immediate session grant without any identity verification, and (3) user enumeration through validation errors. Most fixes are localized to this controller and its model, except email verification which is a module-level feature addition."
 }

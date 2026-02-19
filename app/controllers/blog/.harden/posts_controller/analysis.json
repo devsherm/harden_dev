@@ -7,52 +7,42 @@
       "severity": "low",
       "category": "rate_limiting",
       "scope": "controller",
-      "action": null,
-      "summary": "new and edit actions are not rate-limited",
-      "detail": "Rate limits cover index, show, create, update, and destroy, but the new and edit form-rendering actions are omitted. While both require authentication (and edit additionally requires ownership), an authenticated user could still spam these endpoints to generate server-side rendering load. The risk is low because authentication already constrains the attacker pool.",
-      "suggested_fix": "Add rate_limit to: 60, within: 1.minute, only: %i[ new edit ] (or fold them into the existing index/show read-path limit)."
+      "action": "new",
+      "summary": "new and edit actions missing rate limits",
+      "detail": "The `new` and `edit` form-rendering actions are excluded from all three `rate_limit` declarations. While they sit behind `require_authentication` and are lightweight (no DB writes), an attacker with a valid session can hit them without throttling. On an app with expensive view rendering or before_action chains this becomes a resource-exhaustion vector.",
+      "suggested_fix": "Add a rate_limit covering new and edit, e.g. `rate_limit to: 30, within: 1.minute, only: %i[ new edit ]`. A generous limit is fine since these are read-only form renders."
     },
     {
       "id": "finding_002",
       "severity": "low",
-      "category": "authorization",
-      "scope": "controller",
-      "action": null,
-      "summary": "Post lookup is unscoped for mutation actions (defense-in-depth gap)",
-      "detail": "set_blog_post loads any post by ID globally (Blog::Post.find), and authorize_post_owner! separately checks ownership. This works correctly, but a defense-in-depth pattern would scope the lookup itself to current_user for mutation actions, so that an authorization bypass bug could never expose another user's post object to the action body. Currently if authorize_post_owner! were accidentally removed or bypassed, the action would proceed on an arbitrary post.",
-      "suggested_fix": "Consider a separate set_owned_blog_post callback for edit/update/destroy that scopes via current_user.blog_posts.find(params.expect(:id)), or at minimum add a comment documenting the intentional two-step pattern."
+      "category": "other",
+      "scope": "module",
+      "action": "show",
+      "summary": "show action may N+1 on comments and their authors",
+      "detail": "set_blog_post eager-loads :user but not :comments (or comments' :user). If the show view renders a comment list with author names, each comment triggers a separate query. An attacker who creates many comments on a single post can amplify server load per request. The existing rate_limit on show (60/min) bounds this somewhat but does not eliminate it.",
+      "suggested_fix": "Eager-load the comments association in set_blog_post for the show action: `Blog::Post.includes(:user, comments: :user).find(...)`, or add a separate before_action for show that augments the preload. Only include what the view actually renders."
     },
     {
       "id": "finding_003",
       "severity": "low",
       "category": "other",
-      "scope": "controller",
-      "action": "show",
-      "summary": "Show action does not eager-load comments, risking N+1 under load",
-      "detail": "set_blog_post eager-loads :user but not :comments. If the show view template iterates over @blog_post.comments (likely, given the comment form is initialized here), each comment triggers a separate query. An attacker could create a post with many comments and repeatedly request the show page to amplify database load, especially combined with the generous 60 req/min read rate limit.",
-      "suggested_fix": "Add .includes(:comments) in set_blog_post (or only for the show action), and consider capping displayed comments with a limit/pagination to bound the worst case."
+      "scope": "module",
+      "action": "destroy",
+      "summary": "destroy may raise unhandled ActiveRecord::InvalidForeignKey",
+      "detail": "The schema defines a foreign key from blog_comments to blog_posts. If the Blog::Post model does not declare `dependent: :destroy` (or :nullify / :delete_all) on the comments association, calling `@blog_post.destroy` on a post with comments raises `ActiveRecord::InvalidForeignKey` — an exception, not a false return. The `if/else` guard in the destroy action would never reach its else branch; instead Rails' default exception handler responds with a 500 and may leak schema details in non-production environments.",
+      "suggested_fix": "Ensure `Blog::Post` declares `has_many :comments, dependent: :destroy` (or the appropriate strategy). Alternatively, add a `rescue ActiveRecord::InvalidForeignKey` block in the destroy action that renders a user-friendly error. Verify the model association first — if dependent is already set, this finding is moot."
     },
     {
       "id": "finding_004",
       "severity": "low",
       "category": "other",
-      "scope": "app",
-      "action": null,
-      "summary": "Authorization failures are not logged for security monitoring",
-      "detail": "When authorize_post_owner! rejects a request, it silently redirects or renders a 403 without logging the attempt. In a production environment, repeated authorization failures from a single user or IP are a signal of probing or enumeration. Without logging, these events are invisible to security monitoring.",
-      "suggested_fix": "Add Rails.logger.warn or a structured security event log line in the authorize_post_owner! failure branch, including the current user ID, requested post ID, and remote IP."
-    },
-    {
-      "id": "finding_005",
-      "severity": "low",
-      "category": "validation",
-      "scope": "module",
-      "action": null,
-      "summary": "No visible body/title length enforcement at controller or model layer",
-      "detail": "The strong params permit :title and :body without length constraints, and the controller does not enforce maximum lengths. If the Blog::Post model also lacks length validations, an attacker could submit arbitrarily large payloads that consume storage and slow rendering. This is a module-scope concern because the fix belongs in the model, but the controller analysis surfaces it.",
-      "suggested_fix": "Verify that Blog::Post has validates :title, length: { maximum: N } and validates :body, length: { maximum: N }. If not, add them. Optionally add Rack::Attack or middleware-level request body size limits as a secondary control."
+      "scope": "controller",
+      "action": "index",
+      "summary": "Offset pagination allows moderately expensive deep-page queries",
+      "detail": "pagination_offset clamps to 400 pages (offset 10,000), which is a good mitigation. However, on large tables SQLite (and most RDBMS) still perform a sequential scan for high offsets. The code's own comment acknowledges this and suggests keyset pagination. At 60 requests/minute with offset 10,000, this is a bounded but non-trivial load amplifier.",
+      "suggested_fix": "Consider switching to keyset (cursor-based) pagination using `WHERE created_at < :cursor ORDER BY created_at DESC LIMIT 25`, which performs in constant time regardless of page depth. This is an enhancement, not urgent — the current clamp provides adequate protection for moderate table sizes."
     }
   ],
   "overall_risk": "low",
-  "notes": "This controller is already well-hardened. It implements authentication with appropriate exemptions for public read actions, ownership-based authorization for mutations, rate limiting across all write paths, Rails 8 params.expect() for strong parameters, offset-capped pagination to prevent large-OFFSET DoS, and sanitized error responses that avoid leaking schema details. The findings above are defense-in-depth recommendations rather than exploitable vulnerabilities. The most actionable items are the eager-loading gap in show (finding_003) and the model-level length validations (finding_005), which together bound the worst-case resource consumption an authenticated attacker can trigger."
+  "notes": "This controller is already well-hardened. It implements authentication gating, ownership authorization, strict strong parameters (Rails 8 params.expect), rate limiting on all mutation actions, sanitized error output, and clamped pagination. The remaining findings are low-severity defense-in-depth improvements rather than exploitable vulnerabilities. The biggest variable is finding_003 (FK handling on destroy), which depends on the model's `dependent` declaration — if that is already set, the finding is not applicable."
 }

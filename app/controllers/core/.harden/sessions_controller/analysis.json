@@ -4,85 +4,75 @@
   "findings": [
     {
       "id": "finding_001",
-      "severity": "high",
-      "category": "other",
+      "severity": "medium",
+      "category": "info_leak",
       "scope": "controller",
       "action": "create",
-      "summary": "Timing side-channel leaks whether a username exists",
-      "detail": "The `user&.authenticate(params[:password])` pattern short-circuits when `find_by` returns nil, skipping the expensive bcrypt comparison entirely. An attacker can measure response times to enumerate valid usernames: requests for non-existent users return ~1ms faster than requests for valid users (bcrypt typically adds 100-200ms). This defeats the generic error message.",
-      "suggested_fix": "When `user` is nil, perform a dummy bcrypt hash to normalize response time: `Core::User.new(password: 'dummy').authenticate(params[:password])` or `BCrypt::Password.create('dummy')` in the else branch. Alternatively, use `authenticate_by` (Rails 7.1+) which handles constant-time comparison internally."
+      "summary": "Timing side-channel enables user enumeration via bcrypt skip",
+      "detail": "When find_by returns nil, the &. safe-navigation operator skips the bcrypt authenticate call entirely. An attacker can measure response times to distinguish 'user not found' (fast, no bcrypt) from 'wrong password' (slow, bcrypt comparison). This leaks which usernames exist despite the generic error message.",
+      "suggested_fix": "Always perform a constant-time bcrypt comparison even when no user is found. For example: `user = Core::User.find_by(name: params[:name]); if user&.authenticate(params[:password]) ... else BCrypt::Password.new(Core::User::FALLBACK_DIGEST).is_password?(params[:password]); ...end`. Alternatively, use `authenticate_by` (Rails 7.1+) which handles this internally."
     },
     {
       "id": "finding_002",
       "severity": "high",
       "category": "other",
-      "scope": "module",
+      "scope": "controller",
       "action": "create",
-      "summary": "Potential session fixation if start_session does not reset the session",
-      "detail": "If `start_session` sets the user ID on the existing session without first calling `reset_session`, an attacker who knows a victim's pre-authentication session ID can hijack the post-authentication session. This is a classic session fixation attack. The implementation of `start_session` (likely in ApplicationController or a concern) must be verified.",
-      "suggested_fix": "Ensure `start_session` calls `reset_session` before writing the authenticated user's ID into the session. This invalidates the pre-auth session token and issues a new one. Example: `reset_session; session[:user_id] = user.id`."
+      "summary": "Potential session fixation if start_session does not call reset_session",
+      "detail": "If the start_session helper sets the user ID on the existing session without first calling reset_session, an attacker who plants a known session ID (e.g., via a URL or XSS on a subdomain) can hijack the authenticated session after the victim logs in. This is the classic session fixation attack.",
+      "suggested_fix": "Ensure start_session calls `reset_session` before writing the new user identifier to the session. E.g.: `def start_session(user); reset_session; session[:user_id] = user.id; end`."
     },
     {
       "id": "finding_003",
       "severity": "medium",
-      "category": "params",
+      "category": "rate_limiting",
       "scope": "controller",
       "action": "create",
-      "summary": "Direct param access instead of strong parameters",
-      "detail": "The controller reads `params[:name]` and `params[:password]` directly rather than using Rails 8's `params.expect()` or `params.require().permit()`. While no mass assignment occurs here, direct access bypasses Rails' parameter filtering, meaning unexpected parameter shapes (arrays, hashes) are passed through unchecked. A malicious `name[]=foo&name[]=bar` payload would pass an array to `find_by`, which could produce unexpected query behavior.",
-      "suggested_fix": "Use `params.expect(session: [:name, :password])` or at minimum `params.require(:session).permit(:name, :password)` and update the form to nest fields under a `session` key. This enforces scalar types and rejects malformed input."
+      "summary": "Rate limit is per-IP only; no per-account throttle or lockout",
+      "detail": "The rate_limit of 10/min is applied by IP address (Rails default). An attacker with access to many IPs (botnets, cloud functions, proxies) can brute-force a single account without hitting the per-IP limit. There is also no account lockout or exponential backoff after repeated failures against the same username.",
+      "suggested_fix": "Add a per-account rate limit or lockout mechanism. Options: (1) track failed_login_attempts and locked_until columns on Core::User, locking after N failures; (2) add a compound rate limit keyed on both IP and username using `rate_limit by: -> { [request.remote_ip, params[:name]].join }` or a custom store; (3) introduce exponential backoff delays."
     },
     {
       "id": "finding_004",
-      "severity": "medium",
-      "category": "other",
-      "scope": "app",
-      "action": "create",
-      "summary": "No account lockout after repeated failed login attempts",
-      "detail": "The rate limit (10/min) throttles by IP, but there is no per-account lockout mechanism. An attacker using a botnet or rotating IPs can attempt unlimited passwords against a single account without triggering the IP-based rate limit. This makes targeted brute-force attacks feasible against high-value accounts.",
-      "suggested_fix": "Track failed login attempts per account (e.g., `failed_attempts` counter and `locked_until` timestamp on Core::User). Lock the account after N consecutive failures (e.g., 5) with exponential backoff or a fixed lockout period. Send a notification to the account owner on lockout."
-    },
-    {
-      "id": "finding_005",
-      "severity": "medium",
+      "severity": "low",
       "category": "authorization",
       "scope": "controller",
       "action": "destroy",
-      "summary": "Destroy action has no authentication guard",
-      "detail": "The `destroy` action calls `end_session` without verifying that a session actually exists or that the request comes from an authenticated user. While functionally benign (ending a nil session is a no-op), it means unauthenticated requests can hit this endpoint. More importantly, there is no `before_action` requiring authentication, which means the controller relies entirely on the caller to manage auth state — a pattern that's fragile if routes or middleware change.",
-      "suggested_fix": "Add a `before_action :require_authentication, only: :destroy` (or equivalent auth check) to ensure only authenticated users can hit the logout endpoint. Also consider `allow_unauthenticated_access` for `new` and `create` to make the intent explicit."
+      "summary": "No authentication guard on destroy action",
+      "detail": "The destroy action calls end_session unconditionally. If an unauthenticated user or an already-expired session hits this endpoint, behavior depends on end_session's implementation. At minimum, it wastes a session reset cycle; at worst, it could error or produce inconsistent state.",
+      "suggested_fix": "Add a before_action authentication check that applies to :destroy (e.g., `before_action :require_session, only: :destroy`) and redirect unauthenticated users to the login page."
+    },
+    {
+      "id": "finding_005",
+      "severity": "low",
+      "category": "params",
+      "scope": "controller",
+      "action": "create",
+      "summary": "Direct params access instead of strong parameters",
+      "detail": "The action reads params[:name] and params[:password] directly rather than using params.expect() or params.require().permit(). While no mass-assignment occurs here, using strong params is a defense-in-depth convention that makes the expected parameter shape explicit and guards against accidental misuse if the action evolves.",
+      "suggested_fix": "Extract session params via strong params: `session_params = params.expect(session: [:name, :password])` and reference `session_params[:name]` and `session_params[:password]`. Update the form to nest inputs under a `session` key."
     },
     {
       "id": "finding_006",
       "severity": "low",
-      "category": "rate_limiting",
-      "scope": "controller",
+      "category": "other",
+      "scope": "app",
       "action": "create",
-      "summary": "Rate limit of 10/minute may be too permissive for login",
-      "detail": "10 attempts per minute per IP allows 600 password guesses per hour from a single source. For a login endpoint this is generous — OWASP recommends more aggressive throttling for authentication. Combined with the lack of per-account lockout (finding_004), this leaves a meaningful brute-force window.",
-      "suggested_fix": "Consider reducing to 5 attempts per minute, or implement progressive delays (e.g., 10/min for first burst, then 3/min after 3 consecutive failures). The `rate_limit` directive also supports `with:` for custom responses — consider returning 429 with a Retry-After header."
+      "summary": "No security event logging for failed login attempts",
+      "detail": "Failed authentication attempts are not logged with contextual information (IP address, attempted username, timestamp). Without this, detecting brute-force attacks, credential stuffing, or compromised accounts via log analysis or alerting is not possible.",
+      "suggested_fix": "Add structured logging on authentication failure: `Rails.logger.warn { { event: 'login_failed', name: params[:name], ip: request.remote_ip, at: Time.current }.to_json }`. Ensure the password is never logged. Consider also logging successful logins for audit trails."
     },
     {
       "id": "finding_007",
       "severity": "low",
-      "category": "other",
-      "scope": "app",
-      "action": "create",
-      "summary": "No audit logging for authentication events",
-      "detail": "Failed and successful login attempts are not logged in a structured way. Without authentication event logs, it is difficult to detect brute-force attacks, credential stuffing, or compromised accounts during incident response. Rails' default request logs capture the route but not the semantic event.",
-      "suggested_fix": "Log authentication events (success, failure, lockout) with structured data: timestamp, username attempted, source IP, user agent. Use `Rails.logger.info` with tagged logging or a dedicated audit log model. Ensure passwords are never logged."
-    },
-    {
-      "id": "finding_008",
-      "severity": "low",
-      "category": "authorization",
+      "category": "validation",
       "scope": "controller",
-      "action": "new",
-      "summary": "No guard preventing already-authenticated users from accessing login",
-      "detail": "An already-signed-in user can navigate to the login form and submit credentials again, potentially creating a new session without ending the old one. This is a minor UX/security issue — it could lead to session confusion or, in edge cases, session fixation if reset_session is not called.",
-      "suggested_fix": "Add a `before_action` on `new` and `create` that redirects authenticated users away from the login form: `redirect_to root_path, notice: 'Already signed in.' if authenticated?`."
+      "action": "create",
+      "summary": "No early return on blank credentials",
+      "detail": "If name or password is blank/nil, the action still executes a database query (find_by with nil/empty string) before failing. This is a minor inefficiency and a missing input validation boundary.",
+      "suggested_fix": "Add an early return before the DB query: `if params[:name].blank? || params[:password].blank?` then render the failure response immediately without touching the database."
     }
   ],
-  "overall_risk": "high",
-  "notes": "The controller follows several good practices: generic error messages that don't distinguish between bad username and bad password, rate limiting on create, and proper 422 status on failed login. The two high-severity findings (timing side-channel and potential session fixation) are common in hand-rolled authentication and both have straightforward fixes. If this app is on Rails 8+, consider adopting the built-in `Authentication` generator (`bin/rails generate authentication`) which handles timing-safe comparison, session fixation, and rate limiting out of the box. The `authenticate_by` class method (Rails 7.1+) is the simplest fix for the timing oracle."
+  "overall_risk": "medium",
+  "notes": "The controller follows several good practices: generic error messages that avoid user enumeration via content, rate limiting on create, and proper 422 status on failure. The main risks are the timing side-channel (finding_001) and potential session fixation (finding_002), both of which are common in hand-rolled session controllers. If Rails 7.1+ is available, switching to `authenticate_by` in finding_001 is the simplest fix since it includes constant-time comparison built-in. Finding_002's severity depends entirely on the start_session implementation — verify it calls reset_session."
 }

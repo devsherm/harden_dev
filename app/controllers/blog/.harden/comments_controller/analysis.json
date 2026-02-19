@@ -5,62 +5,62 @@
     {
       "id": "finding_001",
       "severity": "medium",
-      "category": "rate_limiting",
-      "scope": "controller",
-      "action": "new",
-      "summary": "Missing rate limit on `new` action",
-      "detail": "All other actions have explicit rate limits, but the `new` action (which renders a form) has none. While lower risk than write endpoints, an attacker could hit this endpoint at high frequency for resource exhaustion or reconnaissance (e.g., confirming authentication state). The `edit` action is similarly unprotected but is behind `authorize_comment_owner!`, limiting its exposure.",
-      "suggested_fix": "Add `rate_limit to: 30, within: 1.minute, only: [:new, :edit]` to match the read-only `index` rate limit."
-    },
-    {
-      "id": "finding_002",
-      "severity": "medium",
       "category": "other",
       "scope": "controller",
       "action": "toggle_like",
       "summary": "Database row lock held during response rendering",
-      "detail": "The `with_lock` block in `toggle_like` wraps the entire `respond_to` block, meaning the `SELECT ... FOR UPDATE` row lock is held while Rails renders the response template. Under load, this extends lock duration unnecessarily and increases contention on the comments table, which could be exploited to degrade performance.",
-      "suggested_fix": "Restructure so the lock only covers the read-check-update cycle: capture the update result inside `with_lock`, then call `respond_to` outside the lock block."
+      "detail": "The `with_lock` block wraps the entire `respond_to` block, including template rendering and redirect generation. The pessimistic lock on the comment row is held far longer than necessary — it should only cover the read-check-update cycle. Under concurrent toggle requests, this creates lock contention on the row and increases the window for lock-wait timeouts, which an attacker could exploit to degrade performance.",
+      "suggested_fix": "Narrow the `with_lock` scope to only the read and update. Compute `new_status` and call `update` inside `with_lock`, then call `respond_to` outside it after the lock is released."
+    },
+    {
+      "id": "finding_002",
+      "severity": "medium",
+      "category": "authorization",
+      "scope": "module",
+      "action": "create",
+      "summary": "No access check on target post before creating comment",
+      "detail": "The `create` action finds any `Blog::Post` by ID and attaches a comment to it. There is no verification that the post is in a commentable state (e.g., not locked, archived, or otherwise restricted). Any authenticated user can create comments on any post by submitting an arbitrary `post_id`. If post-level access controls are added later, this becomes an authorization bypass.",
+      "suggested_fix": "Add a guard that validates the target post is eligible for new comments — e.g., a `commentable?` check or a scope like `Blog::Post.commentable.find(...)`. Even if no such state exists today, adding a `commentable` scope now makes the controller resilient to future schema changes."
     },
     {
       "id": "finding_003",
-      "severity": "medium",
-      "category": "validation",
-      "scope": "module",
-      "action": "create",
-      "summary": "No visible body length constraint on comment body",
-      "detail": "The strong params correctly whitelist only `:body`, but there is no controller-level or visible model-level validation limiting body length. Without a maximum length, an attacker could submit very large payloads (up to the web server's request body limit, typically ~1MB on Puma) repeatedly, wasting database storage and potentially degrading rendering performance when comments are displayed.",
-      "suggested_fix": "Add a model validation such as `validates :body, length: { maximum: 10_000 }` on `Blog::Comment`. Also consider a `presence: true` validation if not already present."
+      "severity": "low",
+      "category": "info_leak",
+      "scope": "controller",
+      "action": "index",
+      "summary": "Public index exposes comments from all posts without scoping",
+      "detail": "The `index` action is the only unauthenticated endpoint and returns comments across all posts. If any concept of post visibility (drafts, unlisted, private) is introduced, comments on those posts would leak through this endpoint. Even today, the unscoped query paired with the `includes(:post, :user)` eager load means the JSON/HTML views could expose post titles and user details for every comment.",
+      "suggested_fix": "Scope the index query through visible/published posts: `Blog::Comment.joins(:post).where(blog_posts: { ... }).includes(:post, :user)`. At minimum, ensure the view templates do not expose sensitive user attributes (email, etc.) from the eager-loaded `:user` association."
     },
     {
       "id": "finding_004",
       "severity": "low",
-      "category": "authorization",
+      "category": "info_leak",
       "scope": "controller",
       "action": null,
-      "summary": "Global ID lookup in `set_blog_comment` lacks defense-in-depth scoping",
-      "detail": "`set_blog_comment` uses `Blog::Comment.find(params.expect(:id))`, which looks up comments by global ID. While the subsequent `authorize_comment_owner!` and `authorize_post_author!` callbacks correctly prevent unauthorized access, scoping the lookup adds defense-in-depth against Insecure Direct Object Reference (IDOR) if authorization callbacks are ever reordered or removed.",
-      "suggested_fix": "For owner-gated actions, consider scoping: `current_user.comments.find(params.expect(:id))`. This makes authorization implicit in the query, so an unauthorized lookup raises `RecordNotFound` (404) rather than reaching the authorization check."
+      "summary": "Comment existence enumerable via 403 vs 404 response differentiation",
+      "detail": "The `set_blog_comment` callback runs before `authorize_comment_owner!`. When an unauthorized user requests a valid comment ID they get 403 Forbidden; when they request a non-existent ID they get 404 Not Found. This oracle lets an attacker enumerate valid comment IDs and confirm which comments exist, which could be leveraged for further targeted attacks.",
+      "suggested_fix": "Return a uniform 404 for both not-found and not-authorized cases on `edit`/`update`/`destroy`, or scope the lookup to `current_user.comments.find(...)` so unauthorized records appear nonexistent."
     },
     {
       "id": "finding_005",
       "severity": "low",
       "category": "other",
       "scope": "controller",
-      "action": "new",
-      "summary": "`new` action does not set parent post context",
-      "detail": "The `new` action builds a bare `Blog::Comment.new` without associating it with a `Blog::Post`. Since `create` expects `params[:post_id]` and builds through `@blog_post.comments`, the form rendered by `new` may lack the necessary post context. If the form works via a hidden field or URL param, this is cosmetic; if not, it could lead to confusing error states that leak implementation details.",
-      "suggested_fix": "Either scope `new` under the post route (e.g., `@blog_post = Blog::Post.find(params.expect(:post_id)); @blog_comment = @blog_post.comments.build`) or remove the standalone `new` action if comments are only created inline on the post show page."
+      "action": "destroy",
+      "summary": "`destroy!` raises unhandled exception on failure",
+      "detail": "`destroy!` raises `ActiveRecord::RecordNotDestroyed` if a `before_destroy` callback halts the chain or a database constraint prevents deletion. In production this surfaces as a 500 Internal Server Error. While Rails suppresses stack traces in production, the generic 500 adds noise to error monitoring and gives no useful feedback to the user.",
+      "suggested_fix": "Use `destroy` (without bang) and handle the failure case explicitly, returning an appropriate error response with a user-facing message and correct status code."
     },
     {
       "id": "finding_006",
       "severity": "low",
-      "category": "info_leak",
+      "category": "rate_limiting",
       "scope": "controller",
-      "action": "create",
-      "summary": "`create` failure renders full post show template",
-      "detail": "On validation failure, `create` renders `blog/posts/show`, which may trigger additional queries (other comments, post metadata) and expose data beyond what the comment form error context requires. If the show template expects instance variables not set by `create` (e.g., `@comments` with pagination), it could also raise a `NoMethodError`, leaking stack trace details depending on error handling configuration.",
-      "suggested_fix": "Ensure all instance variables required by the posts/show template are set before the render call (e.g., `@blog_comments = @blog_post.comments.includes(:user).order(created_at: :desc)`), or redirect back to the post with an error flash instead of rendering the foreign template."
+      "action": "index",
+      "summary": "High-offset pagination on unauthenticated endpoint enables resource consumption",
+      "detail": "The page parameter is clamped to 1–1000, allowing offsets up to 24,975. In SQLite, large OFFSET values require scanning and discarding rows sequentially, making high-page requests significantly more expensive than low-page ones. Combined with the 30 req/min rate limit on the unauthenticated `index` endpoint, an attacker can cause disproportionate database load by repeatedly requesting high page numbers.",
+      "suggested_fix": "Switch to cursor-based (keyset) pagination using `created_at`/`id` as the cursor, which has constant-time performance regardless of position. If offset pagination must be retained, lower the page clamp to a realistic ceiling (e.g., 100) or reduce the rate limit for high-page requests."
     },
     {
       "id": "finding_007",
@@ -68,11 +68,11 @@
       "category": "rate_limiting",
       "scope": "controller",
       "action": "edit",
-      "summary": "Missing rate limit on `edit` action",
-      "detail": "The `edit` action has no rate limit. Although it requires both authentication and ownership authorization, an attacker who compromises a user session could use rapid `edit` requests for application fingerprinting or resource probing.",
-      "suggested_fix": "Add `edit` to the rate limit declaration suggested in finding_001: `rate_limit to: 30, within: 1.minute, only: [:new, :edit]`."
+      "summary": "No rate limit on `new` and `edit` actions",
+      "detail": "The `new` and `edit` actions render forms and are not rate-limited. While both require authentication, `edit` calls `set_blog_comment` which hits the database. An attacker with valid credentials could rapidly request `edit` for many comment IDs to probe comment existence and cause moderate DB load.",
+      "suggested_fix": "Add a rate limit to `new` and `edit`, e.g., `rate_limit to: 30, within: 1.minute, only: %i[new edit]`."
     }
   ],
   "overall_risk": "low",
-  "notes": "This controller is already well-hardened: authentication gates all write actions, authorization callbacks correctly protect owner and author actions, strong params are tightly scoped to only `:body`, pagination is bounded, and rate limits cover all write paths. The `toggle_like` action properly uses row-level locking to prevent race conditions. The remaining findings are defense-in-depth improvements rather than exploitable vulnerabilities. The most actionable items are the lock scope in `toggle_like` (finding_002) and adding a model-level body length validation (finding_003)."
+  "notes": "This controller is already well-hardened: authentication is enforced on all mutating actions, ownership authorization is in place for edit/update/destroy, toggle_like is scoped to the post author, strong params are tight (only `:body`), rate limits cover all major actions, and pagination is clamped. The findings above are incremental improvements — the most actionable are narrowing the `with_lock` scope in `toggle_like` (finding_001) and unifying the 403/404 response to prevent ID enumeration (finding_004). The remaining items are low-severity defense-in-depth measures."
 }
