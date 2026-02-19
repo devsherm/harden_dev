@@ -17,6 +17,7 @@ set :port, find_open_port((ENV["PORT"] || 4567).to_i)
 set :bind, "0.0.0.0"
 set :server, :puma
 set :server_settings, { force_shutdown_after: 3 }
+set :run, false
 
 # Rails root defaults to current directory (run from within your Rails project)
 RAILS_ROOT = ENV.fetch("RAILS_ROOT", ".")
@@ -26,10 +27,12 @@ $pipeline = Pipeline.new(rails_root: RAILS_ROOT)
 %w[INT TERM].each do |sig|
   trap(sig) do
     $stderr.puts "Caught #{sig}, shutting down..."
-    $pipeline.shutdown(timeout: 5)
+    $pipeline.cancel!   # just sets @cancelled = true, no mutex
     exit
   end
 end
+
+at_exit { $pipeline.shutdown(timeout: 5) }
 
 # Auto-discover controllers at startup so selection is the opening screen
 $pipeline.safe_thread { $pipeline.discover_controllers }
@@ -254,7 +257,28 @@ post "/shutdown" do
   Thread.new do
     sleep 0.1  # let response flush
     $pipeline.shutdown(timeout: 5)
+  rescue => e
+    $stderr.puts "Shutdown error: #{e.message}"
+  ensure
     exit
   end
   { status: "shutting_down" }.to_json
+end
+
+# ── Manual startup with TOCTOU retry ────────────────────────
+
+MAX_PORT_RETRIES = 3
+
+retries = 0
+begin
+  Sinatra::Application.run!
+rescue Errno::EADDRINUSE
+  retries += 1
+  if retries < MAX_PORT_RETRIES
+    new_port = TCPServer.open("0.0.0.0", 0) { |s| s.addr[1] }
+    $stderr.puts "Port #{settings.port} in use, retrying on #{new_port}..."
+    set :port, new_port
+    retry
+  end
+  raise
 end

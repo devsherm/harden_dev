@@ -2,6 +2,7 @@ require "json"
 require "open3"
 require "fileutils"
 require "shellwords"
+require "securerandom"
 require_relative "prompts"
 
 class Pipeline
@@ -46,6 +47,7 @@ class Pipeline
 
   def safe_thread(workflow_name: nil, &block)
     t = Thread.new do
+      raise "Pipeline is shutting down" if cancelled?
       block.call
     rescue => e
       if workflow_name
@@ -66,6 +68,10 @@ class Pipeline
       @threads << t
     end
     t
+  end
+
+  def cancel!
+    @cancelled = true  # Atomic in CRuby (GVL), safe without mutex
   end
 
   def cancelled?
@@ -579,7 +585,7 @@ class Pipeline
   # ── Ad-hoc Queries ──────────────────────────────────────────
 
   def ask_question(name, question)
-    query_id = "ask_#{Time.now.to_f}"
+    query_id = "ask_#{SecureRandom.hex(8)}"
     @mutex.synchronize do
       workflow = @state[:workflows][name]
       return { error: "No workflow for #{name}" } unless workflow
@@ -621,7 +627,7 @@ class Pipeline
   end
 
   def explain_finding(name, finding_id)
-    query_id = "explain_#{Time.now.to_f}"
+    query_id = "explain_#{SecureRandom.hex(8)}"
     @mutex.synchronize do
       workflow = @state[:workflows][name]
       return { error: "No workflow for #{name}" } unless workflow
@@ -762,11 +768,11 @@ class Pipeline
       result = Process.wait2(pid, Process::WNOHANG)
       if result
         _, status = result
-        reader.join(timeout)
+        reader.join(5)
         return [output, status.success?]
       end
       if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline || cancelled?
-        Process.kill("-TERM", pid) rescue nil
+        Process.kill("-TERM", pid) rescue Errno::ESRCH
         sleep 0.5
         Process.kill("-KILL", pid) rescue Errno::ESRCH
         Process.wait2(pid) rescue nil
@@ -800,7 +806,10 @@ class Pipeline
   # Drop oldest completed queries when over the cap (caller holds @mutex)
   def prune_queries
     return if @queries.length <= MAX_QUERIES
-    @queries.reject! { |q| q[:status] == "complete" || q[:status] == "error" }
+    removable = @queries.select { |q| %w[complete error].include?(q[:status]) }
+    remove_count = @queries.length - MAX_QUERIES
+    removable.first(remove_count).each { |q| @queries.delete(q) }
+    # If still over cap (too many pending), drop oldest pending
     @queries.shift while @queries.length > MAX_QUERIES
   end
 
@@ -812,11 +821,14 @@ class Pipeline
   end
 
   def run_all_ci_checks(controller_relative)
-    CI_CHECKS.map do |check|
+    threads = CI_CHECKS.map do |check|
       cmd = check[:cmd].call(controller_relative)
-      output, passed = spawn_with_timeout(*cmd, timeout: COMMAND_TIMEOUT, chdir: @rails_root)
-      { name: check[:name], command: cmd.join(" "), passed: passed, output: output }
+      Thread.new do
+        output, passed = spawn_with_timeout(*cmd, timeout: COMMAND_TIMEOUT, chdir: @rails_root)
+        { name: check[:name], command: cmd.join(" "), passed: passed, output: output }
+      end
     end
+    threads.map(&:value)
   end
 
   def derive_test_path(controller_path)
