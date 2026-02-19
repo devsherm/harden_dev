@@ -26,6 +26,15 @@
   <body>
     <header>
       <%= link_to "Blog", root_path %>
+      <nav>
+        <% if signed_in? %>
+          Signed in as <%= current_user.name %>
+          <%= button_to "Sign out", core_session_path, method: :delete %>
+        <% else %>
+          <%= link_to "Sign in", new_core_session_path %>
+          <%= link_to "Sign up", new_core_registration_path %>
+        <% end %>
+      </nav>
     </header>
     <nav>
       <%= link_to "Back to posts", blog_posts_path %>

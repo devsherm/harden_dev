@@ -1,11 +1,9 @@
 one:
   post: one
   body: Great article!
-  author: Charlie
-  liked_by_author:
+  user: charlie
 
 two:
   post: two
   body: Thanks for sharing.
-  author: Diana
-  liked_by_author:
+  user: diana

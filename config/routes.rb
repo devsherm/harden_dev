@@ -1,6 +1,11 @@
 Rails.application.routes.draw do
   get "/", to: redirect("/blog/posts", status: 302), as: :root
 
+  namespace :core do
+    resource :session, only: %i[new create destroy]
+    resource :registration, only: %i[new create]
+  end
+
   namespace :blog do
     resources :comments, except: [ :show ] do
       member do

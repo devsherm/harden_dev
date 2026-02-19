@@ -1,14 +1,14 @@
 class Blog::PostsController < ApplicationController
-  # before_action :require_authentication, except: %i[ index show ]
+  before_action :require_authentication, except: %i[ index show ]
   before_action :set_blog_post, only: %i[ show edit update destroy ]
-  # before_action :authorize_post_owner!, only: %i[ edit update destroy ]
+  before_action :authorize_post_owner!, only: %i[ edit update destroy ]
 
   rate_limit to: 5, within: 1.minute, only: %i[ create update ]
   rate_limit to: 3, within: 1.minute, only: :destroy
 
   # GET /blog/posts or /blog/posts.json
   def index
-    @blog_posts = Blog::Post.order(created_at: :desc).limit(25).offset(pagination_offset)
+    @blog_posts = Blog::Post.includes(:user).order(created_at: :desc).limit(25).offset(pagination_offset)
   end
 
   # GET /blog/posts/1 or /blog/posts/1.json
@@ -28,6 +28,7 @@ class Blog::PostsController < ApplicationController
   # POST /blog/posts or /blog/posts.json
   def create
     @blog_post = Blog::Post.new(blog_post_params)
+    @blog_post.user = current_user
 
     respond_to do |format|
       if @blog_post.save
@@ -71,12 +72,12 @@ class Blog::PostsController < ApplicationController
   private
     # Use callbacks to share common setup or constraints between actions.
     def set_blog_post
-      @blog_post = Blog::Post.find(params.expect(:id))
+      @blog_post = Blog::Post.includes(:user).find(params.expect(:id))
     end
 
     # Verify the current user owns the post before allowing mutations.
     def authorize_post_owner!
-      unless @blog_post.author == current_user.name
+      unless @blog_post.user_id == current_user.id
         respond_to do |format|
           format.html { redirect_to @blog_post, alert: "You are not authorized to perform this action.", status: :see_other }
           format.json { render json: { error: "Forbidden" }, status: :forbidden }
@@ -86,7 +87,7 @@ class Blog::PostsController < ApplicationController
 
     # Only allow a list of trusted parameters through.
     def blog_post_params
-      params.expect(blog_post: [ :title, :body, :topic, :author ])
+      params.expect(blog_post: [ :title, :body, :topic ])
     end
 
     def pagination_offset

@@ -1,7 +1,7 @@
 <div id="<%= dom_id post %>">
   <p>
     <%= link_to post.title, post %>
-    — by <%= post.author %>
+    — by <%= post.user.name %>
     <% if post.topic.present? %>
       | <%= post.topic %>
     <% end %>

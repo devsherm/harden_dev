@@ -1,4 +1,5 @@
 class Blog::CommentsController < ApplicationController
+  before_action :require_authentication, except: :index
   rate_limit to: 5, within: 1.minute, only: :create
   rate_limit to: 10, within: 1.minute, only: :toggle_like
   before_action :set_blog_comment, only: %i[ edit update destroy ]
@@ -6,7 +7,7 @@ class Blog::CommentsController < ApplicationController
   # GET /blog/comments or /blog/comments.json
   def index
     page = [ params.fetch(:page, 1).to_i, 1 ].max
-    @blog_comments = Blog::Comment.includes(:post).order(created_at: :desc).limit(25).offset((page - 1) * 25)
+    @blog_comments = Blog::Comment.includes(:post, :user).order(created_at: :desc).limit(25).offset((page - 1) * 25)
   end
 
   # GET /blog/comments/new
@@ -22,6 +23,7 @@ class Blog::CommentsController < ApplicationController
   def create
     @blog_post = Blog::Post.find(params.expect(:post_id))
     @blog_comment = @blog_post.comments.build(blog_comment_params)
+    @blog_comment.user = current_user
 
     respond_to do |format|
       if @blog_comment.save
@@ -49,10 +51,10 @@ class Blog::CommentsController < ApplicationController
 
   def toggle_like
     @blog_comment = Blog::Comment.find(params.expect(:id))
-    if @blog_comment.liked_by_author.present?
-      @blog_comment.update(liked_by_author: nil)
+    if @blog_comment.liked?
+      @blog_comment.unset!
     else
-      @blog_comment.update(liked_by_author: @blog_comment.post.author)
+      @blog_comment.liked!
     end
 
     respond_to do |format|
@@ -79,6 +81,6 @@ class Blog::CommentsController < ApplicationController
 
     # Only allow a list of trusted parameters through.
     def blog_comment_params
-      params.expect(blog_comment: [ :body, :author ])
+      params.expect(blog_comment: [ :body ])
     end
 end

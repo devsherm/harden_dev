@@ -25,11 +25,6 @@
   </div>
 
   <div>
-    <%= form.label :author, style: "display: block" %>
-    <%= form.text_field :author %>
-  </div>
-
-  <div>
     <%= form.submit blog_post.new_record? ? "Create post" : "Update post" %>
   </div>
 <% end %>

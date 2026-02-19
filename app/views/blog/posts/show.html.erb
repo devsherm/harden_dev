@@ -2,7 +2,7 @@
 
 <h1><%= @blog_post.title %></h1>
 
-<p>By <%= @blog_post.author %></p>
+<p>By <%= @blog_post.user.name %></p>
 <% if @blog_post.topic.present? %>
   <p>Topic: <%= @blog_post.topic %></p>
 <% end %>
@@ -19,15 +19,15 @@
 <h2>Comments</h2>
 
 <% if @blog_post.comments.any? %>
-  <% @blog_post.comments.order(:created_at).each do |comment| %>
+  <% @blog_post.comments.includes(:user).order(:created_at).each do |comment| %>
     <div id="<%= dom_id comment %>">
-      <p><strong><%= comment.author %></strong></p>
+      <p><strong><%= comment.user.name %></strong></p>
       <p><%= comment.body %></p>
-      <% if comment.liked_by_author.present? %>
-        <p>Liked by <%= comment.liked_by_author %></p>
+      <% if comment.liked? %>
+        <p>Liked by <%= @blog_post.user.name %></p>
       <% end %>
       <p><%= comment.created_at %></p>
-      <%= button_to(comment.liked_by_author.present? ? "Unlike" : "Like", toggle_like_blog_comment_path(comment), method: :patch) %>
+      <%= button_to(comment.liked? ? "Unlike" : "Like", toggle_like_blog_comment_path(comment), method: :patch) %>
       <p>
         <%= link_to "Edit", edit_blog_comment_path(comment) %>
         <%= button_to "Delete", blog_comment_path(comment), method: :delete %>
@@ -50,11 +50,6 @@
       </ul>
     </div>
   <% end %>
-
-  <div>
-    <%= form.label :author, style: "display: block" %>
-    <%= form.text_field :author %>
-  </div>
 
   <div>
     <%= form.label :body, style: "display: block" %>

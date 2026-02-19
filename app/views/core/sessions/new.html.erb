@@ -1,0 +1,21 @@
+<h1>Sign in</h1>
+
+<%= form_with url: core_session_path do |form| %>
+  <div>
+    <%= form.label :name %>
+    <%= form.text_field :name, autofocus: true, required: true %>
+  </div>
+
+  <div>
+    <%= form.label :password %>
+    <%= form.password_field :password, required: true %>
+  </div>
+
+  <div>
+    <%= form.submit "Sign in" %>
+  </div>
+<% end %>
+
+<p>
+  Don't have an account? <%= link_to "Sign up", new_core_registration_path %>
+</p>

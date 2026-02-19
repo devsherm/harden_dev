@@ -1,0 +1,15 @@
+alice:
+  name: Alice
+  password_digest: <%= BCrypt::Password.create("password") %>
+
+bob:
+  name: Bob
+  password_digest: <%= BCrypt::Password.create("password") %>
+
+charlie:
+  name: Charlie
+  password_digest: <%= BCrypt::Password.create("password") %>
+
+diana:
+  name: Diana
+  password_digest: <%= BCrypt::Password.create("password") %>
