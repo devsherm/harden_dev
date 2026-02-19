@@ -9,10 +9,10 @@ class Pipeline
 
   def initialize(rails_root: ".")
     @rails_root = rails_root
-    @mutex = Mutex.new
     @state = {
       phase: "idle",
-      screens: {},
+      controllers: [],
+      screen: nil,
       errors: [],
       started_at: nil,
       completed_at: nil
@@ -22,17 +22,16 @@ class Pipeline
   # ── Discovery ──────────────────────────────────────────────
 
   def discover_controllers
-    update_phase("discovering")
+    @state[:phase] = "discovering"
 
     controllers_dir = File.join(@rails_root, "app", "controllers")
     unless Dir.exist?(controllers_dir)
       add_error("Controllers directory not found: #{controllers_dir}")
-      update_phase("errored")
+      @state[:phase] = "errored"
       return
     end
 
     Dir.glob(File.join(controllers_dir, "**", "*_controller.rb")).each do |path|
-      # Skip ApplicationController and concerns
       basename = File.basename(path, ".rb")
       next if basename == "application_controller"
 
@@ -40,212 +39,196 @@ class Pipeline
       analysis_file = sidecar_path(path, "analysis.json")
       has_existing = File.exist?(analysis_file)
 
-      @mutex.synchronize do
-        @state[:screens][basename] = {
-          name: basename,
-          path: relative,
-          full_path: path,
-          status: "pending",
-          analysis: nil,
-          decision: nil,
-          hardened: nil,
-          verification: nil,
-          error: nil,
-          existing_analysis_at: has_existing ? File.mtime(analysis_file).iso8601 : nil
-        }
-      end
+      @state[:controllers] << {
+        name: basename,
+        path: relative,
+        full_path: path,
+        existing_analysis_at: has_existing ? File.mtime(analysis_file).iso8601 : nil
+      }
     end
 
-    update_phase("awaiting_selection")
+    @state[:phase] = "awaiting_selection"
   end
 
   # ── Selection ─────────────────────────────────────────────
 
-  def select_controllers(names)
-    @mutex.synchronize do
-      @state[:screens].keep_if { |name, _| names.include?(name) }
-    end
+  def select_controller(name)
+    entry = @state[:controllers].find { |c| c[:name] == name }
+    raise "Controller not found: #{name}" unless entry
+
+    @state[:screen] = build_screen(entry)
     run_analysis
   end
 
   def load_existing_analysis(name)
-    screen = screens[name]
-    raise "Screen not found: #{name}" unless screen
+    entry = @state[:controllers].find { |c| c[:name] == name }
+    raise "Controller not found: #{name}" unless entry
 
-    analysis_file = sidecar_path(screen[:full_path], "analysis.json")
+    analysis_file = sidecar_path(entry[:full_path], "analysis.json")
     raise "No existing analysis for #{name}" unless File.exist?(analysis_file)
 
-    @mutex.synchronize do
-      @state[:screens].keep_if { |n, _| n == name }
-    end
+    @state[:screen] = build_screen(entry)
 
     raw = File.read(analysis_file)
     parsed = parse_json_response(raw)
-    update_screen(name, status: "analyzed", analysis: parsed)
-    update_phase("awaiting_decisions")
+    @state[:screen][:analysis] = parsed
+    @state[:screen][:status] = "analyzed"
+    @state[:phase] = "awaiting_decisions"
   end
 
-  # ── Phase 1: Parallel Analysis ─────────────────────────────
+  # ── Phase 1: Analysis ───────────────────────────────────────
 
   def run_analysis
-    update_phase("analyzing")
+    @state[:phase] = "analyzing"
     @state[:started_at] = Time.now.iso8601
+    screen = @state[:screen]
 
-    threads = screens.map do |name, screen|
-      Thread.new do
-        begin
-          update_screen(name, status: "analyzing")
-          source = File.read(screen[:full_path])
-          prompt = Prompts.analyze(name, source)
+    begin
+      screen[:status] = "analyzing"
+      source = File.read(screen[:full_path])
+      prompt = Prompts.analyze(screen[:name], source)
 
-          result = claude_call(prompt)
-          parsed = parse_json_response(result)
+      result = claude_call(prompt)
+      parsed = parse_json_response(result)
 
-          ensure_harden_dir(screen[:full_path])
-          write_sidecar(screen[:full_path], "analysis.json", result)
+      ensure_harden_dir(screen[:full_path])
+      write_sidecar(screen[:full_path], "analysis.json", result)
 
-          update_screen(name, status: "analyzed", analysis: parsed)
-        rescue => e
-          update_screen(name, status: "error", error: e.message)
-          add_error("Analysis failed for #{name}: #{e.message}")
-        end
-      end
+      screen[:analysis] = parsed
+      screen[:status] = "analyzed"
+    rescue => e
+      screen[:error] = e.message
+      screen[:status] = "error"
+      add_error("Analysis failed for #{screen[:name]}: #{e.message}")
     end
 
-    threads.each(&:join)
-    update_phase("awaiting_decisions")
+    @state[:phase] = "awaiting_decisions"
   end
 
-  # ── Phase 2: Accept Decisions ──────────────────────────────
+  # ── Phase 2: Accept Decision ────────────────────────────────
 
-  def submit_decisions(decisions)
-    decisions.each do |name, decision|
-      update_screen(name, decision: decision)
-    end
+  def submit_decision(decision)
+    @state[:screen][:decision] = decision
     run_hardening
   end
 
-  # ── Phase 3: Parallel Hardening ────────────────────────────
+  # ── Phase 3: Hardening ──────────────────────────────────────
 
   def run_hardening
-    update_phase("hardening")
+    @state[:phase] = "hardening"
+    screen = @state[:screen]
 
-    actionable = screens.select { |_, s| s[:decision] && s[:decision]["action"] != "skip" }
-
-    threads = actionable.map do |name, screen|
-      Thread.new do
-        begin
-          update_screen(name, status: "hardening")
-          source = File.read(screen[:full_path])
-          analysis_json = screen[:analysis].to_json
-
-          prompt = Prompts.harden(name, source, analysis_json, screen[:decision])
-          result = claude_call(prompt)
-          parsed = parse_json_response(result)
-
-          write_sidecar(screen[:full_path], "hardened.json", result)
-
-          # Write the hardened source to a preview file (not the actual controller yet)
-          if parsed["hardened_source"]
-            write_sidecar(screen[:full_path], "hardened_preview.rb", parsed["hardened_source"])
-          end
-
-          update_screen(name, status: "hardened", hardened: parsed)
-        rescue => e
-          update_screen(name, status: "error", error: e.message)
-          add_error("Hardening failed for #{name}: #{e.message}")
-        end
-      end
+    if screen[:decision] && screen[:decision]["action"] == "skip"
+      screen[:status] = "skipped"
+      @state[:phase] = "complete"
+      @state[:completed_at] = Time.now.iso8601
+      return
     end
 
-    # Mark skipped screens
-    screens.each do |name, screen|
-      if screen[:decision] && screen[:decision]["action"] == "skip"
-        update_screen(name, status: "skipped")
+    begin
+      screen[:status] = "hardening"
+      source = File.read(screen[:full_path])
+      analysis_json = screen[:analysis].to_json
+
+      prompt = Prompts.harden(screen[:name], source, analysis_json, screen[:decision])
+      result = claude_call(prompt)
+      parsed = parse_json_response(result)
+
+      write_sidecar(screen[:full_path], "hardened.json", result)
+
+      if parsed["hardened_source"]
+        write_sidecar(screen[:full_path], "hardened_preview.rb", parsed["hardened_source"])
       end
+
+      screen[:hardened] = parsed
+      screen[:status] = "hardened"
+    rescue => e
+      screen[:error] = e.message
+      screen[:status] = "error"
+      add_error("Hardening failed for #{screen[:name]}: #{e.message}")
     end
 
-    threads.each(&:join)
     run_verification
   end
 
-  # ── Phase 4: Parallel Verification ─────────────────────────
+  # ── Phase 4: Verification ───────────────────────────────────
 
   def run_verification
-    update_phase("verifying")
+    @state[:phase] = "verifying"
+    screen = @state[:screen]
 
-    hardened = screens.select { |_, s| s[:status] == "hardened" }
+    return unless screen[:status] == "hardened"
 
-    threads = hardened.map do |name, screen|
-      Thread.new do
-        begin
-          update_screen(name, status: "verifying")
-          original_source = File.read(screen[:full_path])
-          hardened_source = screen.dig(:hardened, "hardened_source") || ""
-          analysis_json = screen[:analysis].to_json
+    begin
+      screen[:status] = "verifying"
+      original_source = File.read(screen[:full_path])
+      hardened_source = screen.dig(:hardened, "hardened_source") || ""
+      analysis_json = screen[:analysis].to_json
 
-          prompt = Prompts.verify(name, original_source, hardened_source, analysis_json)
-          result = claude_call(prompt)
-          parsed = parse_json_response(result)
+      prompt = Prompts.verify(screen[:name], original_source, hardened_source, analysis_json)
+      result = claude_call(prompt)
+      parsed = parse_json_response(result)
 
-          write_sidecar(screen[:full_path], "verification.json", result)
+      write_sidecar(screen[:full_path], "verification.json", result)
 
-          update_screen(name, status: "verified", verification: parsed)
-        rescue => e
-          update_screen(name, status: "error", error: e.message)
-          add_error("Verification failed for #{name}: #{e.message}")
-        end
-      end
+      screen[:verification] = parsed
+      screen[:status] = "verified"
+    rescue => e
+      screen[:error] = e.message
+      screen[:status] = "error"
+      add_error("Verification failed for #{screen[:name]}: #{e.message}")
     end
 
-    threads.each(&:join)
-    update_phase("complete")
+    @state[:phase] = "complete"
     @state[:completed_at] = Time.now.iso8601
   end
 
   # ── Ad-hoc Queries ─────────────────────────────────────────
 
-  def ask_about_screen(screen_name, question)
-    screen = screens[screen_name]
-    return { error: "Screen not found" } unless screen
+  def ask_question(question)
+    screen = @state[:screen]
+    return { error: "No active screen" } unless screen
 
     source = File.read(screen[:full_path])
     analysis_json = (screen[:analysis] || {}).to_json
-    prompt = Prompts.ask(screen_name, source, analysis_json, question)
+    prompt = Prompts.ask(screen[:name], source, analysis_json, question)
 
     claude_call(prompt)
   end
 
-  def explain_finding(screen_name, finding_id)
-    screen = screens[screen_name]
-    return { error: "Screen not found" } unless screen
+  def explain_finding(finding_id)
+    screen = @state[:screen]
+    return { error: "No active screen" } unless screen
 
     finding = screen.dig(:analysis, "findings")&.find { |f| f["id"] == finding_id }
     return { error: "Finding not found" } unless finding
 
     source = File.read(screen[:full_path])
-    prompt = Prompts.explain(screen_name, source, finding.to_json)
+    prompt = Prompts.explain(screen[:name], source, finding.to_json)
 
     claude_call(prompt)
   end
 
-  def retry_screen(screen_name)
-    screen = screens[screen_name]
-    return { error: "Screen not found" } unless screen
+  def retry_analysis
+    screen = @state[:screen]
+    return { error: "No active screen" } unless screen
 
     Thread.new do
       begin
-        update_screen(screen_name, status: "analyzing", error: nil)
+        screen[:error] = nil
+        screen[:status] = "analyzing"
         source = File.read(screen[:full_path])
-        prompt = Prompts.analyze(screen_name, source)
+        prompt = Prompts.analyze(screen[:name], source)
 
         result = claude_call(prompt)
         parsed = parse_json_response(result)
 
         write_sidecar(screen[:full_path], "analysis.json", result)
-        update_screen(screen_name, status: "analyzed", analysis: parsed)
+        screen[:analysis] = parsed
+        screen[:status] = "analyzed"
       rescue => e
-        update_screen(screen_name, status: "error", error: e.message)
+        screen[:error] = e.message
+        screen[:status] = "error"
       end
     end
 
@@ -254,15 +237,29 @@ class Pipeline
 
   # ── Helpers ────────────────────────────────────────────────
 
-  def screens
-    @state[:screens]
+  def screen
+    @state[:screen]
   end
 
   def to_json
-    @mutex.synchronize { @state.to_json }
+    @state.to_json
   end
 
   private
+
+  def build_screen(entry)
+    {
+      name: entry[:name],
+      path: entry[:path],
+      full_path: entry[:full_path],
+      status: "pending",
+      analysis: nil,
+      decision: nil,
+      hardened: nil,
+      verification: nil,
+      error: nil
+    }
+  end
 
   def claude_call(prompt)
     require "open3"
@@ -276,26 +273,14 @@ class Pipeline
   end
 
   def parse_json_response(raw)
-    # Claude might wrap JSON in markdown fences
     cleaned = raw.gsub(/\A```json\s*/, "").gsub(/\s*```\z/, "").strip
     JSON.parse(cleaned)
   rescue JSON::ParserError => e
     { "parse_error" => e.message, "raw_response" => raw[0..1000] }
   end
 
-  def update_phase(phase)
-    @mutex.synchronize { @state[:phase] = phase }
-  end
-
-  def update_screen(name, **attrs)
-    @mutex.synchronize do
-      @state[:screens][name] ||= {}
-      attrs.each { |k, v| @state[:screens][name][k] = v }
-    end
-  end
-
   def add_error(msg)
-    @mutex.synchronize { @state[:errors] << { message: msg, at: Time.now.iso8601 } }
+    @state[:errors] << { message: msg, at: Time.now.iso8601 }
   end
 
   def ensure_harden_dir(controller_path)

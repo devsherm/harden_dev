@@ -47,7 +47,7 @@ post "/pipeline/analyze" do
   controller = body["controller"]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
-  Thread.new { $pipeline.select_controllers([controller]) }
+  Thread.new { $pipeline.select_controller(controller) }
 
   { status: "analyzing", phase: "analyzing" }.to_json
 end
@@ -104,47 +104,45 @@ get "/events" do
   end
 end
 
-# ── Phase 2: Human Decisions ────────────────────────────────
+# ── Phase 2: Human Decision ─────────────────────────────────
 
-# Submit decisions for all screens
-# Body: { "projects_controller": { "action": "approve" }, ... }
+# Submit decision for the active screen
+# Body: { "action": "approve|selective|skip", "approved_findings": [...] }
 post "/decisions" do
   content_type :json
-  decisions = JSON.parse(request.body.read)
+  decision = JSON.parse(request.body.read)
 
-  Thread.new { $pipeline.submit_decisions(decisions) }
+  Thread.new { $pipeline.submit_decision(decision) }
 
-  { status: "decisions_received", phase: "hardening" }.to_json
+  { status: "decision_received", phase: "hardening" }.to_json
 end
 
 # ── Ad-hoc Queries ──────────────────────────────────────────
 
-# Ask a free-form question about a screen
-post "/screens/:screen/ask" do
+# Ask a free-form question about the active screen
+post "/ask" do
   content_type :json
-  screen = params[:screen]
   body = JSON.parse(request.body.read)
   question = body["question"]
 
-  answer = $pipeline.ask_about_screen(screen, question)
-  { screen: screen, question: question, answer: answer }.to_json
+  answer = $pipeline.ask_question(question)
+  { question: question, answer: answer }.to_json
 end
 
 # Explain a specific finding
-post "/screens/:screen/explain/:finding_id" do
+post "/explain/:finding_id" do
   content_type :json
-  screen = params[:screen]
   finding_id = params[:finding_id]
 
-  explanation = $pipeline.explain_finding(screen, finding_id)
-  { screen: screen, finding_id: finding_id, explanation: explanation }.to_json
+  explanation = $pipeline.explain_finding(finding_id)
+  { finding_id: finding_id, explanation: explanation }.to_json
 end
 
 # ── Retry ────────────────────────────────────────────────────
 
-post "/pipeline/retry/:screen" do
+post "/pipeline/retry" do
   content_type :json
-  result = $pipeline.retry_screen(params[:screen])
+  result = $pipeline.retry_analysis
   result.to_json
 end
 
