@@ -80,7 +80,7 @@ class Pipeline
     @state[:controllers].sort_by! do |c|
       needs_attention = (c[:stale] == true || c[:stale].nil?) ? 0 : 1
       risk = risk_order.fetch(c[:overall_risk], 3)
-      [needs_attention, risk, c[:name]]
+      [ needs_attention, risk, c[:name] ]
     end
 
     @state[:phase] = "awaiting_selection"

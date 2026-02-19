@@ -5,7 +5,7 @@ class Blog::CommentsController < ApplicationController
 
   # GET /blog/comments or /blog/comments.json
   def index
-    page = [params.fetch(:page, 1).to_i, 1].max
+    page = [ params.fetch(:page, 1).to_i, 1 ].max
     @blog_comments = Blog::Comment.includes(:post).order(created_at: :desc).limit(25).offset((page - 1) * 25)
   end
 

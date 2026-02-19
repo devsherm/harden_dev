@@ -90,6 +90,6 @@ class Blog::PostsController < ApplicationController
     end
 
     def pagination_offset
-      [params.fetch(:page, 0).to_i, 0].max * 25
+      [ params.fetch(:page, 0).to_i, 0 ].max * 25
     end
 end
