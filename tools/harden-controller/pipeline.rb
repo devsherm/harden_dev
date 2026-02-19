@@ -26,6 +26,33 @@ class Pipeline
     @mutex.synchronize { @state[:workflows].key?(name) }
   end
 
+  # Atomically verify guard condition and transition workflow status.
+  # For :not_active guard, creates the workflow if it doesn't exist.
+  # Returns [true, nil] on success, [false, error_string] on failure.
+  def try_transition(name, guard:, to:)
+    @mutex.synchronize do
+      wf = @state[:workflows][name]
+      status = wf&.[](:status)
+
+      case guard
+      when :not_active
+        if status && ACTIVE_STATUSES.include?(status)
+          return [false, "#{name} is already #{status}"]
+        end
+        entry = @state[:controllers].find { |c| c[:name] == name }
+        return [false, "Controller not found: #{name}"] unless entry
+        @state[:workflows][name] = build_workflow(entry.dup).merge(status: to, error: nil, started_at: Time.now.iso8601)
+      else
+        return [false, "No workflow for #{name}"] unless wf
+        return [false, "#{name} is #{status}, expected #{guard}"] unless status == guard.to_s
+        wf[:status] = to
+        wf[:error] = nil
+      end
+
+      [true, nil]
+    end
+  end
+
   def initialize(rails_root: ".")
     @rails_root = rails_root
     @mutex = Mutex.new
@@ -759,6 +786,7 @@ class Pipeline
     opts[:chdir] = chdir if chdir
     pid = Process.spawn(*cmd, **opts, pgroup: true)
     wr.close
+    reaped = false
 
     output = +""
     reader = Thread.new { output << rd.read }
@@ -767,6 +795,7 @@ class Pipeline
     loop do
       result = Process.wait2(pid, Process::WNOHANG)
       if result
+        reaped = true
         _, status = result
         reader.join(5)
         return [output, status.success?]
@@ -776,12 +805,17 @@ class Pipeline
         sleep 0.5
         Process.kill("-KILL", pid) rescue Errno::ESRCH
         Process.wait2(pid) rescue nil
+        reaped = true
         reason = cancelled? ? "Pipeline cancelled" : "Command timed out after #{timeout}s: #{cmd.join(' ')}"
         raise reason
       end
       sleep 0.1
     end
   ensure
+    unless reaped
+      Process.kill("-KILL", pid) rescue Errno::ESRCH
+      Process.wait2(pid) rescue nil
+    end
     rd&.close unless rd&.closed?
     reader&.join(2)
   end
@@ -821,14 +855,19 @@ class Pipeline
   end
 
   def run_all_ci_checks(controller_relative)
-    threads = CI_CHECKS.map do |check|
+    ci_threads = CI_CHECKS.map do |check|
       cmd = check[:cmd].call(controller_relative)
-      Thread.new do
+      t = Thread.new do
         output, passed = spawn_with_timeout(*cmd, timeout: COMMAND_TIMEOUT, chdir: @rails_root)
         { name: check[:name], command: cmd.join(" "), passed: passed, output: output }
       end
+      @mutex.synchronize do
+        @threads.reject! { |th| !th.alive? }
+        @threads << t
+      end
+      t
     end
-    threads.map(&:value)
+    ci_threads.map(&:value)
   end
 
   def derive_test_path(controller_path)
