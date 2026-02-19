@@ -4,75 +4,75 @@
   "findings": [
     {
       "id": "finding_001",
-      "severity": "high",
-      "category": "authorization",
+      "severity": "medium",
+      "category": "rate_limiting",
       "scope": "controller",
-      "action": "edit,update,destroy",
-      "summary": "No ownership check — any authenticated user can modify or delete any comment",
-      "detail": "set_blog_comment performs an unscoped Blog::Comment.find(id), so any authenticated user can edit, update, or destroy any other user's comment. The before_action :require_authentication only ensures a user is logged in, not that they own the record.",
-      "suggested_fix": "Scope the lookup to the current user: `@blog_comment = current_user.comments.find(params.expect(:id))` in set_blog_comment. Alternatively, add a dedicated authorization check (e.g. `@blog_comment.user == current_user || current_user.admin?`) and return 403 on failure. If admins should also be able to act on any comment, use a policy object or role check."
+      "action": "new",
+      "summary": "Missing rate limit on `new` action",
+      "detail": "All other actions have explicit rate limits, but the `new` action (which renders a form) has none. While lower risk than write endpoints, an attacker could hit this endpoint at high frequency for resource exhaustion or reconnaissance (e.g., confirming authentication state). The `edit` action is similarly unprotected but is behind `authorize_comment_owner!`, limiting its exposure.",
+      "suggested_fix": "Add `rate_limit to: 30, within: 1.minute, only: [:new, :edit]` to match the read-only `index` rate limit."
     },
     {
       "id": "finding_002",
       "severity": "medium",
-      "category": "authorization",
+      "category": "other",
       "scope": "controller",
       "action": "toggle_like",
-      "summary": "No authorization policy on toggle_like — any authenticated user can toggle like_status on any comment",
-      "detail": "toggle_like performs an unscoped find and mutates like_status with no check on who is performing the action. Depending on business rules, liking might be restricted to the post author, or at minimum should prevent a user from liking their own comments. The action also bypasses set_blog_comment, creating an inconsistent lookup pattern that will miss any future scoping added to that callback.",
-      "suggested_fix": "Define a clear authorization policy (e.g., only the post author can like/unlike comments on their posts). Use set_blog_comment or a similar scoped lookup, and add an authorization guard: return 403 if the current_user doesn't have permission to toggle."
+      "summary": "Database row lock held during response rendering",
+      "detail": "The `with_lock` block in `toggle_like` wraps the entire `respond_to` block, meaning the `SELECT ... FOR UPDATE` row lock is held while Rails renders the response template. Under load, this extends lock duration unnecessarily and increases contention on the comments table, which could be exploited to degrade performance.",
+      "suggested_fix": "Restructure so the lock only covers the read-check-update cycle: capture the update result inside `with_lock`, then call `respond_to` outside the lock block."
     },
     {
       "id": "finding_003",
       "severity": "medium",
-      "category": "authorization",
-      "scope": "controller",
-      "action": "toggle_like",
-      "summary": "toggle_like not included in set_blog_comment callback — inconsistent record lookup",
-      "detail": "toggle_like does its own Blog::Comment.find() instead of using the set_blog_comment before_action. This means any ownership scoping or authorization logic added to set_blog_comment in the future won't apply to toggle_like, creating a maintenance hazard and a likely bypass.",
-      "suggested_fix": "Add :toggle_like to the set_blog_comment before_action list: `before_action :set_blog_comment, only: %i[edit update destroy toggle_like]` and remove the inline find from toggle_like."
+      "category": "validation",
+      "scope": "module",
+      "action": "create",
+      "summary": "No visible body length constraint on comment body",
+      "detail": "The strong params correctly whitelist only `:body`, but there is no controller-level or visible model-level validation limiting body length. Without a maximum length, an attacker could submit very large payloads (up to the web server's request body limit, typically ~1MB on Puma) repeatedly, wasting database storage and potentially degrading rendering performance when comments are displayed.",
+      "suggested_fix": "Add a model validation such as `validates :body, length: { maximum: 10_000 }` on `Blog::Comment`. Also consider a `presence: true` validation if not already present."
     },
     {
       "id": "finding_004",
       "severity": "low",
-      "category": "validation",
+      "category": "authorization",
       "scope": "controller",
-      "action": "index",
-      "summary": "Unbounded page offset allows expensive database queries",
-      "detail": "The page parameter is clamped to a minimum of 1 but has no upper bound. A request like ?page=999999999 generates `OFFSET 24999999975` which forces the database to scan and skip a huge number of rows. While SQLite handles this somewhat gracefully (it's a sequential scan), this is still an easy denial-of-service vector, especially under concurrent requests.",
-      "suggested_fix": "Add an upper bound: `page = [params.fetch(:page, 1).to_i.clamp(1, 1000), 1].max` or better yet, switch to keyset/cursor pagination which avoids large offsets entirely. Also consider adding rate limiting to the index action."
+      "action": null,
+      "summary": "Global ID lookup in `set_blog_comment` lacks defense-in-depth scoping",
+      "detail": "`set_blog_comment` uses `Blog::Comment.find(params.expect(:id))`, which looks up comments by global ID. While the subsequent `authorize_comment_owner!` and `authorize_post_author!` callbacks correctly prevent unauthorized access, scoping the lookup adds defense-in-depth against Insecure Direct Object Reference (IDOR) if authorization callbacks are ever reordered or removed.",
+      "suggested_fix": "For owner-gated actions, consider scoping: `current_user.comments.find(params.expect(:id))`. This makes authorization implicit in the query, so an unauthorized lookup raises `RecordNotFound` (404) rather than reaching the authorization check."
     },
     {
       "id": "finding_005",
       "severity": "low",
-      "category": "rate_limiting",
+      "category": "other",
       "scope": "controller",
-      "action": "update,destroy",
-      "summary": "No rate limiting on update and destroy actions",
-      "detail": "create and toggle_like have rate limits, but update and destroy do not. While these actions require authentication, a compromised or malicious account could rapidly modify or delete comments without throttling. This is lower severity because the primary fix should be ownership authorization (finding_001), but rate limiting provides defense-in-depth.",
-      "suggested_fix": "Add rate limits: `rate_limit to: 5, within: 1.minute, only: :update` and `rate_limit to: 5, within: 1.minute, only: :destroy`."
+      "action": "new",
+      "summary": "`new` action does not set parent post context",
+      "detail": "The `new` action builds a bare `Blog::Comment.new` without associating it with a `Blog::Post`. Since `create` expects `params[:post_id]` and builds through `@blog_post.comments`, the form rendered by `new` may lack the necessary post context. If the form works via a hidden field or URL param, this is cosmetic; if not, it could lead to confusing error states that leak implementation details.",
+      "suggested_fix": "Either scope `new` under the post route (e.g., `@blog_post = Blog::Post.find(params.expect(:post_id)); @blog_comment = @blog_post.comments.build`) or remove the standalone `new` action if comments are only created inline on the post show page."
     },
     {
       "id": "finding_006",
       "severity": "low",
-      "category": "rate_limiting",
+      "category": "info_leak",
       "scope": "controller",
-      "action": "index",
-      "summary": "No rate limiting on public index action",
-      "detail": "The index action is the only unauthenticated endpoint (except: :index) and has no rate limiting. This makes it vulnerable to scraping and could amplify the unbounded-offset issue (finding_004). An unauthenticated attacker can hit this endpoint at high volume.",
-      "suggested_fix": "Add a rate limit for unauthenticated access: `rate_limit to: 30, within: 1.minute, only: :index`. Consider a higher limit than mutating actions since reads are expected to be more frequent."
+      "action": "create",
+      "summary": "`create` failure renders full post show template",
+      "detail": "On validation failure, `create` renders `blog/posts/show`, which may trigger additional queries (other comments, post metadata) and expose data beyond what the comment form error context requires. If the show template expects instance variables not set by `create` (e.g., `@comments` with pagination), it could also raise a `NoMethodError`, leaking stack trace details depending on error handling configuration.",
+      "suggested_fix": "Ensure all instance variables required by the posts/show template are set before the render call (e.g., `@blog_comments = @blog_post.comments.includes(:user).order(created_at: :desc)`), or redirect back to the post with an error flash instead of rendering the foreign template."
     },
     {
       "id": "finding_007",
       "severity": "low",
-      "category": "other",
-      "scope": "module",
-      "action": "toggle_like",
-      "summary": "toggle_like uses enum bang methods with no error handling",
-      "detail": "The `.liked!` and `.unset!` enum bang methods raise ActiveRecord::RecordInvalid on validation failure and will bubble up as a 500 error. While unlikely to fail in normal operation, a concurrent toggle_like race condition or a future model validation could trigger this, leaking a stack trace in development or returning an opaque 500 in production.",
-      "suggested_fix": "Use non-bang methods (`liked` / `unset`) and handle the false return, or wrap in a rescue with a proper error response. Also consider wrapping the read-then-write in a transaction with a lock to prevent race conditions: `@blog_comment.with_lock { ... }`."
+      "category": "rate_limiting",
+      "scope": "controller",
+      "action": "edit",
+      "summary": "Missing rate limit on `edit` action",
+      "detail": "The `edit` action has no rate limit. Although it requires both authentication and ownership authorization, an attacker who compromises a user session could use rapid `edit` requests for application fingerprinting or resource probing.",
+      "suggested_fix": "Add `edit` to the rate limit declaration suggested in finding_001: `rate_limit to: 30, within: 1.minute, only: [:new, :edit]`."
     }
   ],
-  "overall_risk": "high",
-  "notes": "The most critical issue is the complete lack of ownership authorization — any authenticated user can edit, update, or delete any comment in the system. Strong parameters are well-scoped (only :body is permitted) and create correctly assigns current_user, so the data-write path for new comments is solid. The controller follows good Rails conventions (respond_to blocks, proper status codes, path helpers for redirects) but authorization was never layered in beyond basic authentication. Fixing finding_001 and finding_002 should be the top priority before this controller is considered production-ready."
+  "overall_risk": "low",
+  "notes": "This controller is already well-hardened: authentication gates all write actions, authorization callbacks correctly protect owner and author actions, strong params are tightly scoped to only `:body`, pagination is bounded, and rate limits cover all write paths. The `toggle_like` action properly uses row-level locking to prevent race conditions. The remaining findings are defense-in-depth improvements rather than exploitable vulnerabilities. The most actionable items are the lock scope in `toggle_like` (finding_002) and adding a model-level body length validation (finding_003)."
 }

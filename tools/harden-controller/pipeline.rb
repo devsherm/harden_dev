@@ -141,7 +141,7 @@ class Pipeline
       parsed = parse_json_response(result)
 
       ensure_harden_dir(workflow[:full_path])
-      write_sidecar(workflow[:full_path], "analysis.json", result)
+      write_sidecar(workflow[:full_path], "analysis.json", JSON.pretty_generate(parsed))
 
       @mutex.synchronize do
         workflow[:analysis] = parsed
@@ -196,7 +196,7 @@ class Pipeline
       result = claude_call(prompt)
       parsed = parse_json_response(result)
 
-      write_sidecar(workflow[:full_path], "hardened.json", result)
+      write_sidecar(workflow[:full_path], "hardened.json", JSON.pretty_generate(parsed))
 
       @mutex.synchronize do
         workflow[:original_source] = source
@@ -298,7 +298,7 @@ class Pipeline
 
       # Write test results sidecar
       test_results = { controller: name, passed: passed, attempts: attempts }
-      write_sidecar(workflow[:full_path], "test_results.json", test_results.to_json)
+      write_sidecar(workflow[:full_path], "test_results.json", JSON.pretty_generate(test_results))
 
       @mutex.synchronize do
         workflow[:test_results] = test_results
@@ -356,7 +356,7 @@ class Pipeline
       result = claude_call(prompt)
       parsed = parse_json_response(result)
 
-      write_sidecar(workflow[:full_path], "verification.json", result)
+      write_sidecar(workflow[:full_path], "verification.json", JSON.pretty_generate(parsed))
 
       @mutex.synchronize do
         workflow[:verification] = parsed
@@ -493,6 +493,6 @@ class Pipeline
 
   def write_sidecar(controller_path, filename, content)
     path = sidecar_path(controller_path, filename)
-    File.write(path, content)
+    File.write(path, content.end_with?("\n") ? content : "#{content}\n")
   end
 end
