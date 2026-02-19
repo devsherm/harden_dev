@@ -1,10 +1,12 @@
 class Blog::CommentsController < ApplicationController
   rate_limit to: 5, within: 1.minute, only: :create
+  rate_limit to: 10, within: 1.minute, only: :toggle_like
   before_action :set_blog_comment, only: %i[ edit update destroy ]
 
   # GET /blog/comments or /blog/comments.json
   def index
-    @blog_comments = Blog::Comment.all
+    page = [params.fetch(:page, 1).to_i, 1].max
+    @blog_comments = Blog::Comment.includes(:post).order(created_at: :desc).limit(25).offset((page - 1) * 25)
   end
 
   # GET /blog/comments/new
@@ -16,9 +18,9 @@ class Blog::CommentsController < ApplicationController
   def edit
   end
 
-  # POST /blog/posts/:post_id/comments or /blog/comments
+  # POST /blog/posts/:post_id/comments
   def create
-    @blog_post = Blog::Post.find(params[:post_id] || params.dig(:blog_comment, :post_id))
+    @blog_post = Blog::Post.find(params.expect(:post_id))
     @blog_comment = @blog_post.comments.build(blog_comment_params)
 
     respond_to do |format|
@@ -27,7 +29,7 @@ class Blog::CommentsController < ApplicationController
         format.json { render :show, status: :created, location: @blog_comment }
       else
         format.html { render "blog/posts/show", status: :unprocessable_entity }
-        format.json { render json: @blog_comment.errors, status: :unprocessable_entity }
+        format.json { render json: { errors: @blog_comment.errors.full_messages }, status: :unprocessable_entity }
       end
     end
   end
@@ -40,7 +42,7 @@ class Blog::CommentsController < ApplicationController
         format.json { render :show, status: :ok, location: @blog_comment }
       else
         format.html { render :edit, status: :unprocessable_entity }
-        format.json { render json: @blog_comment.errors, status: :unprocessable_entity }
+        format.json { render json: { errors: @blog_comment.errors.full_messages }, status: :unprocessable_entity }
       end
     end
   end
@@ -52,7 +54,11 @@ class Blog::CommentsController < ApplicationController
     else
       @blog_comment.update(liked_by_author: @blog_comment.post.author)
     end
-    redirect_to blog_post_path(@blog_comment.post)
+
+    respond_to do |format|
+      format.html { redirect_to blog_post_path(@blog_comment.post), status: :see_other }
+      format.json { render :show, status: :ok, location: @blog_comment }
+    end
   end
 
   # DELETE /blog/comments/1 or /blog/comments/1.json
