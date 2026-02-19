@@ -168,6 +168,23 @@ post "/explain/:finding_id" do
   { controller: controller, finding_id: finding_id, explanation: explanation }.to_json
 end
 
+# ── Retry Tests ─────────────────────────────────────────────
+
+post "/pipeline/retry-tests" do
+  content_type :json
+  body = JSON.parse(request.body.read)
+  controller = body["controller"]
+  halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
+
+  workflow = $pipeline.state[:workflows][controller]
+  halt 404, { error: "No workflow for #{controller}" }.to_json unless workflow
+  halt 409, { error: "#{controller} is not in tests_failed state" }.to_json unless workflow[:status] == "tests_failed"
+
+  Thread.new { $pipeline.retry_tests(controller) }
+
+  { status: "retrying_tests", controller: controller }.to_json
+end
+
 # ── Retry ────────────────────────────────────────────────────
 
 post "/pipeline/retry" do

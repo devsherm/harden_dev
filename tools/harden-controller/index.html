@@ -170,6 +170,10 @@
     .workflow-dot.analyzing { background: var(--accent); animation: pulse 1s infinite; }
     .workflow-dot.awaiting_decisions { background: var(--yellow); }
     .workflow-dot.hardening { background: #a78bfa; animation: pulse 1s infinite; }
+    .workflow-dot.testing { background: #38bdf8; animation: pulse 1s infinite; }
+    .workflow-dot.fixing_tests { background: #f472b6; animation: pulse 1s infinite; }
+    .workflow-dot.tested { background: #22d3ee; }
+    .workflow-dot.tests_failed { background: var(--red); }
     .workflow-dot.verifying { background: #818cf8; animation: pulse 1s infinite; }
     .workflow-dot.complete { background: var(--green); }
     .workflow-dot.skipped { background: var(--text-muted); }
@@ -250,6 +254,10 @@
     .status-analyzed .status-dot { background: var(--yellow); }
     .status-hardening .status-dot { background: #a78bfa; animation: pulse 1s infinite; }
     .status-hardened .status-dot { background: #818cf8; }
+    .status-testing .status-dot { background: #38bdf8; animation: pulse 1s infinite; }
+    .status-fixing_tests .status-dot { background: #f472b6; animation: pulse 1s infinite; }
+    .status-tested .status-dot { background: #22d3ee; }
+    .status-tests_failed .status-dot { background: var(--red); }
     .status-verifying .status-dot { background: #818cf8; animation: pulse 1s infinite; }
     .status-verified .status-dot { background: var(--green); }
     .status-skipped .status-dot { background: var(--text-muted); }
@@ -505,6 +513,15 @@
     .phase-indicators .phase-pending { color: var(--text-muted); opacity: 0.5; }
 
     .stale-warning { font-size: 0.75rem; color: var(--orange); font-weight: 600; }
+
+    .test-results { margin-top: 0.8rem; }
+    .test-badge { display: inline-block; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; padding: 0.15rem 0.5rem; border-radius: 3px; }
+    .test-badge.pass { background: #22c55e22; color: var(--green); }
+    .test-badge.fail { background: #ef444422; color: var(--red); }
+    .test-attempt { margin-top: 0.5rem; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+    .test-attempt-header { display: flex; justify-content: space-between; align-items: center; padding: 0.4rem 0.6rem; background: var(--surface-hover); cursor: pointer; font-size: 0.8rem; user-select: none; }
+    .test-attempt-header:hover { background: var(--border); }
+    .test-attempt pre { margin: 0; padding: 0.6rem; background: var(--bg); overflow-x: auto; font-size: 0.75rem; line-height: 1.4; max-height: 300px; overflow-y: auto; }
   </style>
 </head>
 <body>
@@ -643,6 +660,14 @@
       render();
     }
 
+    async function retryTests(name) {
+      await fetch('/pipeline/retry-tests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ controller: name })
+      });
+    }
+
     async function retryAnalysis(name) {
       await fetch('/pipeline/retry', {
         method: 'POST',
@@ -720,8 +745,11 @@
       const parts = [];
       if (counts.analyzing)         parts.push(`<span class="count count-analyzing">${counts.analyzing} analyzing</span>`);
       if (counts.hardening)         parts.push(`<span class="count count-analyzing">${counts.hardening} hardening</span>`);
+      if (counts.testing)           parts.push(`<span class="count count-analyzing">${counts.testing} testing</span>`);
+      if (counts.fixing_tests)      parts.push(`<span class="count count-analyzing">${counts.fixing_tests} fixing tests</span>`);
       if (counts.verifying)         parts.push(`<span class="count count-analyzing">${counts.verifying} verifying</span>`);
       if (counts.awaiting_decisions) parts.push(`<span class="count count-awaiting">${counts.awaiting_decisions} awaiting decisions</span>`);
+      if (counts.tests_failed)      parts.push(`<span class="count count-errored">${counts.tests_failed} tests failed</span>`);
       if (counts.complete)          parts.push(`<span class="count count-complete">${counts.complete} complete</span>`);
       if (counts.errored)           parts.push(`<span class="count count-errored">${counts.errored} errored</span>`);
 
@@ -761,7 +789,7 @@
 
       // Determine action buttons
       let actions = '';
-      const isActive = workflow && ['analyzing', 'hardening', 'verifying'].includes(workflow.phase);
+      const isActive = workflow && ['analyzing', 'hardening', 'testing', 'fixing_tests', 'verifying'].includes(workflow.phase);
 
       if (!isActive) {
         if (c.existing_analysis_at) {
@@ -826,9 +854,10 @@
 
       // Prompt copy buttons
       const promptButtons = [];
-      if (workflow.prompts?.analyze) promptButtons.push(`<button class="small" onclick="copyPrompt('${name}', 'analyze')">Copy Analysis Prompt</button>`);
-      if (workflow.prompts?.harden)  promptButtons.push(`<button class="small" onclick="copyPrompt('${name}', 'harden')">Copy Harden Prompt</button>`);
-      if (workflow.prompts?.verify)  promptButtons.push(`<button class="small" onclick="copyPrompt('${name}', 'verify')">Copy Verify Prompt</button>`);
+      if (workflow.prompts?.analyze)   promptButtons.push(`<button class="small" onclick="copyPrompt('${name}', 'analyze')">Copy Analysis Prompt</button>`);
+      if (workflow.prompts?.harden)    promptButtons.push(`<button class="small" onclick="copyPrompt('${name}', 'harden')">Copy Harden Prompt</button>`);
+      if (workflow.prompts?.fix_tests) promptButtons.push(`<button class="small" onclick="copyPrompt('${name}', 'fix_tests')">Copy Fix Tests Prompt</button>`);
+      if (workflow.prompts?.verify)    promptButtons.push(`<button class="small" onclick="copyPrompt('${name}', 'verify')">Copy Verify Prompt</button>`);
 
       let html = `
         <div class="detail-header">
@@ -873,7 +902,7 @@
 
           ${workflow.analysis?.notes ? `<div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;">${escapeHtml(workflow.analysis.notes)}</div>` : ''}
 
-          ${['analyzed', 'hardened', 'verified'].includes(workflow.status) ? `
+          ${['analyzed', 'hardened', 'tested', 'tests_failed', 'verified'].includes(workflow.status) ? `
             <div class="ask-section">
               <input type="text" id="ask-input" placeholder="Ask a question about this controller..."
                 onkeydown="if(event.key==='Enter') askQuestion('${name}')" />
@@ -882,6 +911,14 @@
               </button>
             </div>
             ${cs.askAnswer ? `<div class="explanation-box">${renderMarkdown(cs.askAnswer)}</div>` : ''}
+          ` : ''}
+
+          ${workflow.test_results ? renderTestResults(name, workflow.test_results) : ''}
+
+          ${workflow.status === 'tests_failed' ? `
+            <div style="margin-top: 0.5rem;">
+              <button class="primary" onclick="retryTests('${name}')">Retry Tests</button>
+            </div>
           ` : ''}
 
           ${verification ? renderVerification(name, verification, workflow) : ''}
@@ -942,6 +979,7 @@
       const items = [
         { key: 'analyzed',  label: 'analyzed' },
         { key: 'hardened',  label: 'hardened' },
+        { key: 'tested',    label: 'tested' },
         { key: 'verified',  label: 'verified' },
       ];
       return `<span class="phase-indicators">${items.map(i =>
@@ -1041,6 +1079,42 @@
       `;
     }
 
+
+    function renderTestResults(name, results) {
+      const passed = results.passed;
+      const attempts = results.attempts || [];
+      const cs = getCtrlState(name);
+      if (!cs.testAttemptOpen) cs.testAttemptOpen = {};
+
+      return `
+        <div class="test-results">
+          <div style="display:flex; align-items:center; gap:0.6rem; margin-bottom:0.4rem;">
+            <span style="font-size:0.8rem; font-weight:600; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.05em;">Test Results</span>
+            <span class="test-badge ${passed ? 'pass' : 'fail'}">${passed ? 'PASS' : 'FAIL'}</span>
+            <span style="font-size:0.75rem; color:var(--text-muted);">${attempts.length} attempt${attempts.length !== 1 ? 's' : ''}</span>
+          </div>
+          ${attempts.map((a, i) => `
+            <div class="test-attempt">
+              <div class="test-attempt-header" onclick="toggleTestAttempt('${name}', ${i})">
+                <span>
+                  <span class="test-badge ${a.passed ? 'pass' : 'fail'}" style="font-size:0.65rem;">${a.passed ? 'PASS' : 'FAIL'}</span>
+                  Attempt ${a.attempt}${a.fixes_applied ? ` (${a.fixes_applied.length} fix${a.fixes_applied.length !== 1 ? 'es' : ''})` : ''}
+                </span>
+                <span>${cs.testAttemptOpen[i] ? '&#9662;' : '&#9656;'}</span>
+              </div>
+              ${cs.testAttemptOpen[i] ? `<pre><code>${escapeHtml(a.output)}</code></pre>` : ''}
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    function toggleTestAttempt(name, index) {
+      const cs = getCtrlState(name);
+      if (!cs.testAttemptOpen) cs.testAttemptOpen = {};
+      cs.testAttemptOpen[index] = !cs.testAttemptOpen[index];
+      render();
+    }
 
     function renderVerification(name, v, workflow) {
       const cs = getCtrlState(name);

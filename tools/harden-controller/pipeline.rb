@@ -3,7 +3,7 @@ require "fileutils"
 require_relative "prompts"
 
 class Pipeline
-  ACTIVE_PHASES = %w[analyzing hardening verifying].freeze
+  ACTIVE_PHASES = %w[analyzing hardening testing fixing_tests verifying].freeze
 
   attr_reader :state
 
@@ -43,10 +43,12 @@ class Pipeline
 
       analysis_file = sidecar_path(path, "analysis.json")
       hardened_file = sidecar_path(path, "hardened.json")
+      test_results_file = sidecar_path(path, "test_results.json")
       verified_file = sidecar_path(path, "verification.json")
 
       has_analysis = File.exist?(analysis_file)
       has_hardened = File.exist?(hardened_file)
+      has_tested = File.exist?(test_results_file)
       has_verified = File.exist?(verified_file)
 
       overall_risk = nil
@@ -67,9 +69,10 @@ class Pipeline
         name: basename,
         path: relative,
         full_path: path,
-        phases: { analyzed: has_analysis, hardened: has_hardened, verified: has_verified },
+        phases: { analyzed: has_analysis, hardened: has_hardened, tested: has_tested, verified: has_verified },
         existing_analysis_at: has_analysis ? File.mtime(analysis_file).iso8601 : nil,
         existing_hardened_at: has_hardened ? File.mtime(hardened_file).iso8601 : nil,
+        existing_tested_at: has_tested ? File.mtime(test_results_file).iso8601 : nil,
         existing_verified_at: has_verified ? File.mtime(verified_file).iso8601 : nil,
         stale: has_analysis ? controller_mtime > File.mtime(analysis_file) : nil,
         overall_risk: overall_risk,
@@ -214,7 +217,123 @@ class Pipeline
       return
     end
 
+    run_testing(name)
+  end
+
+  # ── Phase 3.5: Testing ─────────────────────────────────────
+
+  MAX_FIX_ATTEMPTS = 2
+
+  def run_testing(name)
+    workflow = nil
+    @mutex.synchronize do
+      workflow = @state[:workflows][name]
+      return unless workflow[:status] == "hardened"
+      workflow[:phase] = "testing"
+      workflow[:status] = "testing"
+    end
+
+    test_file = derive_test_path(workflow[:full_path])
+    test_cmd = if test_file && File.exist?(test_file)
+      "bin/rails test #{test_file}"
+    else
+      "bin/rails test"
+    end
+
+    attempts = []
+    passed = false
+
+    begin
+      require "open3"
+      output, status = Open3.capture2e(test_cmd, chdir: @rails_root)
+      attempts << { attempt: 1, command: test_cmd, passed: status.success?, output: output }
+
+      if status.success?
+        passed = true
+      else
+        # Attempt Claude-assisted fixes
+        MAX_FIX_ATTEMPTS.times do |i|
+          @mutex.synchronize do
+            workflow[:phase] = "fixing_tests"
+            workflow[:status] = "fixing_tests"
+          end
+
+          hardened_source = File.read(workflow[:full_path])
+          analysis_json = workflow[:analysis].to_json
+          prompt = Prompts.fix_tests(workflow[:name], hardened_source, output, analysis_json)
+
+          fix_result = claude_call(prompt)
+          parsed = parse_json_response(fix_result)
+
+          @mutex.synchronize do
+            workflow[:prompts][:fix_tests] = prompt
+          end
+
+          if parsed["hardened_source"]
+            File.write(workflow[:full_path], parsed["hardened_source"])
+          end
+
+          # Re-run tests
+          @mutex.synchronize do
+            workflow[:phase] = "testing"
+            workflow[:status] = "testing"
+          end
+
+          output, status = Open3.capture2e(test_cmd, chdir: @rails_root)
+          attempts << {
+            attempt: i + 2,
+            command: test_cmd,
+            passed: status.success?,
+            output: output,
+            fixes_applied: parsed["fixes_applied"],
+            hardening_reverted: parsed["hardening_reverted"]
+          }
+
+          if status.success?
+            passed = true
+            break
+          end
+        end
+      end
+
+      # Write test results sidecar
+      test_results = { controller: name, passed: passed, attempts: attempts }
+      write_sidecar(workflow[:full_path], "test_results.json", test_results.to_json)
+
+      @mutex.synchronize do
+        workflow[:test_results] = test_results
+        if passed
+          workflow[:status] = "tested"
+          workflow[:phase] = "tested"
+        else
+          workflow[:status] = "tests_failed"
+          workflow[:phase] = "tests_failed"
+          add_error("Tests still failing for #{name} after #{attempts.length} attempt(s)")
+          return
+        end
+      end
+    rescue => e
+      @mutex.synchronize do
+        workflow[:error] = e.message
+        workflow[:status] = "error"
+        workflow[:phase] = "errored"
+        add_error("Testing failed for #{name}: #{e.message}")
+      end
+      return
+    end
+
     run_verification(name)
+  end
+
+  def retry_tests(name)
+    @mutex.synchronize do
+      workflow = @state[:workflows][name]
+      raise "No workflow for #{name}" unless workflow
+      raise "#{name} is not in tests_failed state" unless workflow[:status] == "tests_failed"
+      workflow[:status] = "hardened"
+      workflow[:error] = nil
+    end
+    run_testing(name)
   end
 
   # ── Phase 4: Verification ─────────────────────────────────
@@ -223,7 +342,7 @@ class Pipeline
     workflow = nil
     @mutex.synchronize do
       workflow = @state[:workflows][name]
-      return unless workflow[:status] == "hardened"
+      return unless workflow[:status] == "tested"
       workflow[:phase] = "verifying"
       workflow[:status] = "verifying"
     end
@@ -315,12 +434,13 @@ class Pipeline
       analysis: nil,
       decision: nil,
       hardened: nil,
+      test_results: nil,
       verification: nil,
       error: nil,
       started_at: nil,
       completed_at: nil,
       original_source: nil,
-      prompts: { analyze: nil, harden: nil, verify: nil }
+      prompts: { analyze: nil, harden: nil, fix_tests: nil, verify: nil }
     }
   end
 
@@ -350,6 +470,16 @@ class Pipeline
 
   def add_error(msg)
     @state[:errors] << { message: msg, at: Time.now.iso8601 }
+  end
+
+  def derive_test_path(controller_path)
+    # app/controllers/blog/posts_controller.rb → test/controllers/blog/posts_controller_test.rb
+    relative = controller_path.sub("#{@rails_root}/", "")
+    test_relative = relative
+      .sub(%r{\Aapp/controllers/}, "test/controllers/")
+      .sub(/\.rb\z/, "_test.rb")
+    path = File.join(@rails_root, test_relative)
+    File.exist?(path) ? path : nil
   end
 
   def ensure_harden_dir(controller_path)

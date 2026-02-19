@@ -94,6 +94,56 @@ module Prompts
     PROMPT
   end
 
+  # Phase 3.5: Fix failing tests after hardening
+  def self.fix_tests(controller_name, hardened_source, test_output, analysis_json)
+    <<~PROMPT
+      You are a Rails security hardening specialist. The hardened controller below causes test failures.
+      Fix the controller so tests pass while preserving as many hardening changes as possible.
+
+      ## Controller: #{controller_name}
+
+      ### Hardened Source (current)
+      ```ruby
+      #{hardened_source}
+      ```
+
+      ### Test Output
+      ```
+      #{test_output}
+      ```
+
+      ### Original Analysis
+      ```json
+      #{analysis_json}
+      ```
+
+      ## Your Task
+
+      1. Read the test failures carefully
+      2. Identify which hardening changes broke the tests
+      3. Fix the controller so tests pass
+      4. Preserve as many security hardening changes as possible — only revert what is necessary to fix tests
+
+      ## Output Format
+
+      Respond with ONLY this JSON (no markdown fences, no preamble):
+
+      {
+        "controller": "#{controller_name}",
+        "status": "fixed",
+        "hardened_source": "THE COMPLETE FIXED CONTROLLER SOURCE CODE",
+        "fixes_applied": [
+          {
+            "description": "What was changed to fix the test failure",
+            "hardening_preserved": true,
+            "notes": "Any relevant context"
+          }
+        ],
+        "hardening_reverted": ["List of hardening changes that had to be reverted, if any"]
+      }
+    PROMPT
+  end
+
   # Phase 4: Verify hardening was applied correctly
   def self.verify(controller_name, original_source, hardened_source, analysis_json)
     <<~PROMPT
