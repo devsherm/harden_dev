@@ -4,75 +4,55 @@
   "findings": [
     {
       "id": "finding_001",
-      "severity": "high",
-      "category": "authorization",
-      "scope": "module",
-      "action": null,
-      "summary": "Owner authorization compares by display name instead of user ID",
-      "detail": "authorize_post_owner! checks @blog_post.author == current_user.name, comparing string display names. If two users share the same name, either can mutate the other's posts. If a user changes their display name, they lose ownership of all prior posts. The create action also stores current_user.name as the author, compounding the issue.",
-      "suggested_fix": "Add a user_id foreign key to blog_posts. Set @blog_post.user_id = current_user.id in create. Compare @blog_post.user_id == current_user.id in authorize_post_owner!. Keep the author name column for display purposes only."
-    },
-    {
-      "id": "finding_002",
       "severity": "medium",
       "category": "validation",
       "scope": "controller",
       "action": "index",
-      "summary": "Unbounded pagination offset enables database denial of service",
-      "detail": "pagination_offset has no upper bound. A request to ?page=999999999 generates OFFSET 24999999975, forcing SQLite to scan and discard that many rows before returning results. This is a cheap way for an attacker to saturate database I/O.",
-      "suggested_fix": "Cap the page parameter to a reasonable maximum (e.g., page = [[params[:page].to_i, 0].max, 100].min) or switch to cursor-based pagination. Also consider adding a total-count guard so pages beyond the last return empty results immediately."
+      "summary": "Unbounded pagination offset enables DB performance abuse",
+      "detail": "pagination_offset computes the offset as page.to_i * 25 with only a lower bound (max with 0). There is no upper bound, so a request like ?page=999999999 generates OFFSET 24999999975 in SQL. SQLite must scan through all skipped rows to satisfy a large OFFSET, making this an effective denial-of-service vector against the database even at low request rates.",
+      "suggested_fix": "Cap the page parameter to a sane maximum, e.g. [params.fetch(:page, 0).to_i.clamp(0, 400), 0].max * 25, which limits to 10,000 posts. Also consider keyset pagination (WHERE id < :last_id) for large datasets, which eliminates the OFFSET scan entirely."
     },
     {
-      "id": "finding_003",
-      "severity": "medium",
-      "category": "validation",
-      "scope": "module",
-      "action": "create",
-      "summary": "No visible length validation on user-submitted text fields",
-      "detail": "The strong params permit title, body, and topic with no length constraints visible at the controller level. If the Blog::Post model also lacks length validations, an attacker could submit multi-megabyte payloads that consume storage and slow down rendering. Even with model validations, extremely large payloads are parsed and allocated in memory before validation runs.",
-      "suggested_fix": "Add model-level validates :title, length: { maximum: 255 }; validates :body, length: { maximum: 50_000 }; validates :topic, length: { maximum: 100 } (adjust limits to your needs). For defense in depth, consider Rack middleware or Rails config to cap request body size (e.g., Rack::Protection::MaximumBodyLength or nginx client_max_body_size)."
-    },
-    {
-      "id": "finding_004",
-      "severity": "low",
-      "category": "authorization",
-      "scope": "controller",
-      "action": null,
-      "summary": "authorize_post_owner! does not explicitly halt the filter chain",
-      "detail": "The before_action relies on Rails' implicit performed? check to halt execution after redirect_to/render. While this works correctly in current Rails, it is a fragile pattern — a future refactor (e.g., extracting the check into a service object or adding error logging after the respond_to block) could inadvertently allow the action to proceed for unauthorized users.",
-      "suggested_fix": "Add an explicit return or use throw(:abort) after the respond_to block, or restructure as: redirect_to(...) and return unless @blog_post.author == current_user.name. Alternatively, raise a custom ForbiddenError and handle it in a rescue_from at the ApplicationController level."
-    },
-    {
-      "id": "finding_005",
+      "id": "finding_002",
       "severity": "low",
       "category": "rate_limiting",
       "scope": "controller",
       "action": "index",
-      "summary": "No rate limiting on read endpoints",
-      "detail": "The index and show actions have no rate limits. Combined with the unbounded pagination in index, an attacker can rapidly enumerate all posts or generate expensive database queries. Show is lower risk but still allows rapid content scraping.",
-      "suggested_fix": "Add a higher rate limit for read actions, e.g., rate_limit to: 60, within: 1.minute, only: %i[index show]. This still allows normal browsing while limiting automated scraping and offset-based DoS."
+      "summary": "Public read endpoints lack rate limiting",
+      "detail": "index and show are excluded from authentication (correctly, for a public blog) but have no rate limits. An automated client can scrape all posts and enumerate content without throttling. Combined with finding_001 (unbounded offset), a scraper can walk the entire dataset rapidly.",
+      "suggested_fix": "Add a higher rate limit on read actions, e.g. rate_limit to: 60, within: 1.minute, only: %i[ index show ]. This still allows normal browsing while limiting automated scraping."
     },
     {
-      "id": "finding_006",
+      "id": "finding_003",
+      "severity": "low",
+      "category": "info_leak",
+      "scope": "controller",
+      "action": null,
+      "summary": "JSON error responses expose model validation details",
+      "detail": "Create and update render @blog_post.errors.full_messages in JSON responses. This reveals internal attribute names and validation rules (e.g. 'Title is too long (maximum is 255 characters)', 'Topic is not included in the list') to API consumers. For an internal or first-party app this is standard practice, but for a public-facing API it leaks schema information.",
+      "suggested_fix": "If the API is public-facing, consider mapping full_messages to generic user-friendly error strings. For a first-party app, the current behavior is acceptable — flag this as a conscious design decision rather than an oversight."
+    },
+    {
+      "id": "finding_004",
+      "severity": "low",
+      "category": "validation",
+      "scope": "module",
+      "action": null,
+      "summary": "Topic parameter accepted as free text with no value constraint",
+      "detail": "The blog_post_params method permits :topic as a free string. If topics are expected to come from a fixed set (e.g., 'tech', 'lifestyle', 'news'), this should be enforced at the model layer with an inclusion validation. Without it, users can submit arbitrary topic values, making filtering and display unpredictable.",
+      "suggested_fix": "Add a model validation: validates :topic, inclusion: { in: ALLOWED_TOPICS }, allow_blank: true. If topic is genuinely free-text (a tag the user invents), this finding is informational only — document the intent."
+    },
+    {
+      "id": "finding_005",
       "severity": "low",
       "category": "other",
       "scope": "controller",
       "action": "index",
-      "summary": "Index query may cause N+1 if view accesses associations",
-      "detail": "Blog::Post.order(...).limit(25) does not eager-load any associations. If the index view renders comment counts, author details, or other associated data, each post triggers a separate query. While primarily a performance issue, N+1 queries under load amplify the impact of scraping or DoS attacks.",
-      "suggested_fix": "If the index view accesses comments, add .includes(:comments) or use a counter_cache on the association. Profile with bullet gem or query logs to confirm."
-    },
-    {
-      "id": "finding_007",
-      "severity": "low",
-      "category": "other",
-      "scope": "controller",
-      "action": "show",
-      "summary": "Show action does not eager-load comments for display",
-      "detail": "The show action sets @blog_comment = Blog::Comment.new but does not load existing comments. If the show view lists comments (likely for a blog post), they will be lazy-loaded, causing an N+1 if the view iterates comment authors or nested data.",
-      "suggested_fix": "Add @blog_post.comments.includes(:any_nested_association) or preload comments in set_blog_post for the show action. Consider scoping to .order(created_at: :asc).limit(100) to prevent unbounded comment loading."
+      "summary": "Fixed page size prevents client-side control but offset-based pagination scales poorly",
+      "detail": "The page size is hardcoded at 25, which is good (no user-controlled LIMIT). However, offset-based pagination degrades on SQLite as the dataset grows — OFFSET N requires scanning N rows. This is a performance concern with security implications: an attacker who finds the last page can force the DB to scan the entire table per request.",
+      "suggested_fix": "For a blog with moderate traffic, the current approach with a capped page number (see finding_001) is sufficient. For larger scale, switch to keyset/cursor pagination: WHERE created_at < :last_seen_timestamp ORDER BY created_at DESC LIMIT 25, which performs in constant time regardless of page depth."
     }
   ],
-  "overall_risk": "medium",
-  "notes": "This controller is well-structured with authentication, owner authorization, rate limiting on mutations, Rails 8 params.expect(), and server-side author assignment. The critical gap is name-based ownership (finding_001) — this is an architectural issue requiring a schema migration to add user_id. The unbounded pagination (finding_002) is the most immediately exploitable issue and is a simple fix. The remaining findings are defense-in-depth improvements. CSRF protection is handled by Rails defaults and is not a concern here. Redirect targets are all internal paths — no open redirect risk. Error messages are appropriately generic and do not leak internal state."
+  "overall_risk": "low",
+  "notes": "This controller is already well-hardened. It uses Rails 8 params.expect() for strong params, applies authentication and owner-based authorization correctly, includes rate limiting on all mutating actions, eager-loads associations to prevent N+1s, uses proper HTTP status codes (303 for post-redirect-get), and avoids unsafe redirects. The main actionable finding is the unbounded pagination offset (finding_001), which is a straightforward fix. The remaining findings are low-severity refinements."
 }
