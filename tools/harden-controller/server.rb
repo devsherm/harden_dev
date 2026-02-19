@@ -218,6 +218,6 @@ end
 
 post "/shutdown" do
   content_type :json
-  Thread.new { sleep 0.5; exit! }
+  Thread.new { sleep 0.5; exit }
   { status: "shutting_down" }.to_json
 end

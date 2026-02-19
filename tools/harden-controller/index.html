@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Harden Orchestrator</title>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
   <style>
     :root {
       --bg: #0f1117;
@@ -559,22 +560,41 @@
 
     // ── SSE Connection ────────────────────────────────────────
 
+    let sseBackoff = 2000;
+
     function connectSSE() {
       const es = new EventSource('/events');
       es.onmessage = (e) => {
+        sseBackoff = 2000;
         pipeline = JSON.parse(e.data);
         render();
       };
       es.onerror = () => {
-        setTimeout(connectSSE, 2000);
+        es.close();
+        setTimeout(connectSSE, sseBackoff);
+        sseBackoff = Math.min(sseBackoff * 2, 30000);
       };
     }
 
     // ── API Calls ─────────────────────────────────────────────
 
+    async function apiFetch(url, options = {}) {
+      const res = await fetch(url, options);
+      if (!res.ok) {
+        let msg = `Request failed (${res.status})`;
+        try {
+          const body = await res.json();
+          if (body.error) msg = body.error;
+        } catch (_) {}
+        showToast(msg);
+        throw new Error(msg);
+      }
+      return res;
+    }
+
     async function shutdownServer() {
       if (!confirm('Shut down the server?')) return;
-      await fetch('/shutdown', { method: 'POST' });
+      await apiFetch('/shutdown', { method: 'POST' });
       document.getElementById('app').innerHTML = '<h2 style="margin-top:2rem;color:var(--text-muted);text-align:center;">Server stopped.</h2>';
     }
 
@@ -583,7 +603,7 @@
       perController = {};
       loadingExplain = {};
       loadingAsk = {};
-      await fetch('/pipeline/reset', { method: 'POST' });
+      await apiFetch('/pipeline/reset', { method: 'POST' });
     }
 
     function isFindingApproved(name, findingId) {
@@ -626,7 +646,7 @@
         decision = { controller: name, action: 'selective', approved_findings: approved };
       }
 
-      await fetch('/decisions', {
+      await apiFetch('/decisions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(decision)
@@ -638,7 +658,7 @@
       loadingExplain[key] = true;
       render();
 
-      const res = await fetch(`/explain/${findingId}`, {
+      const res = await apiFetch(`/explain/${findingId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ controller: name })
@@ -657,7 +677,7 @@
       loadingAsk[name] = true;
       render();
 
-      const res = await fetch('/ask', {
+      const res = await apiFetch('/ask', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ controller: name, question })
@@ -669,7 +689,7 @@
     }
 
     async function retryTests(name) {
-      await fetch('/pipeline/retry-tests', {
+      await apiFetch('/pipeline/retry-tests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ controller: name })
@@ -677,7 +697,7 @@
     }
 
     async function retryCi(name) {
-      await fetch('/pipeline/retry-ci', {
+      await apiFetch('/pipeline/retry-ci', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ controller: name })
@@ -685,7 +705,7 @@
     }
 
     async function retryAnalysis(name) {
-      await fetch('/pipeline/retry', {
+      await apiFetch('/pipeline/retry', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ controller: name })
@@ -694,7 +714,7 @@
 
     async function analyzeController(name, evt) {
       if (evt) evt.stopPropagation();
-      await fetch('/pipeline/analyze', {
+      await apiFetch('/pipeline/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ controller: name })
@@ -705,7 +725,7 @@
 
     async function loadExistingAnalysis(name, evt) {
       if (evt) evt.stopPropagation();
-      await fetch('/pipeline/load-analysis', {
+      await apiFetch('/pipeline/load-analysis', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ controller: name })
@@ -1302,7 +1322,7 @@
 
     function renderMarkdown(str) {
       if (typeof str !== 'string') str = JSON.stringify(str, null, 2);
-      return marked.parse(str);
+      return DOMPurify.sanitize(marked.parse(str));
     }
 
     // ── Plan Prompt Generation ─────────────────────────────

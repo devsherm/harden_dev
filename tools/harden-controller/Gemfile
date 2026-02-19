@@ -3,4 +3,3 @@ source "https://rubygems.org"
 gem "sinatra"
 gem "sinatra-contrib"  # for streaming support
 gem "puma"
-gem "json"

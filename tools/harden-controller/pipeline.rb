@@ -1,4 +1,5 @@
 require "json"
+require "open3"
 require "fileutils"
 require_relative "prompts"
 
@@ -127,36 +128,40 @@ class Pipeline
   # ── Phase 1: Analysis ──────────────────────────────────────
 
   def run_analysis(name)
-    workflow = nil
+    source_path = ctrl_name = nil
     @mutex.synchronize do
       workflow = @state[:workflows][name]
       workflow[:phase] = "analyzing"
       workflow[:status] = "analyzing"
       workflow[:started_at] = Time.now.iso8601
       workflow[:error] = nil
+      source_path = workflow[:full_path]
+      ctrl_name = workflow[:name]
     end
 
     begin
-      source = File.read(workflow[:full_path])
-      prompt = Prompts.analyze(workflow[:name], source)
+      source = File.read(source_path)
+      prompt = Prompts.analyze(ctrl_name, source)
 
       result = claude_call(prompt)
       parsed = parse_json_response(result)
 
-      ensure_harden_dir(workflow[:full_path])
-      write_sidecar(workflow[:full_path], "analysis.json", JSON.pretty_generate(parsed))
+      ensure_harden_dir(source_path)
+      write_sidecar(source_path, "analysis.json", JSON.pretty_generate(parsed))
 
       @mutex.synchronize do
-        workflow[:analysis] = parsed
-        workflow[:status] = "analyzed"
-        workflow[:phase] = "awaiting_decisions"
-        workflow[:prompts][:analyze] = prompt
+        wf = @state[:workflows][name]
+        wf[:analysis] = parsed
+        wf[:status] = "analyzed"
+        wf[:phase] = "awaiting_decisions"
+        wf[:prompts][:analyze] = prompt
       end
     rescue => e
       @mutex.synchronize do
-        workflow[:error] = e.message
-        workflow[:status] = "error"
-        workflow[:phase] = "errored"
+        wf = @state[:workflows][name]
+        wf[:error] = e.message
+        wf[:status] = "error"
+        wf[:phase] = "errored"
         add_error("Analysis failed for #{name}: #{e.message}")
       end
     end
@@ -176,7 +181,7 @@ class Pipeline
   # ── Phase 3: Hardening ────────────────────────────────────
 
   def run_hardening(name)
-    workflow = nil
+    source_path = ctrl_name = analysis_json = decision = nil
     @mutex.synchronize do
       workflow = @state[:workflows][name]
 
@@ -189,32 +194,37 @@ class Pipeline
 
       workflow[:phase] = "hardening"
       workflow[:status] = "hardening"
+      source_path = workflow[:full_path]
+      ctrl_name = workflow[:name]
+      analysis_json = workflow[:analysis].to_json
+      decision = workflow[:decision]
     end
 
     begin
-      source = File.read(workflow[:full_path])
-      analysis_json = workflow[:analysis].to_json
+      source = File.read(source_path)
 
-      prompt = Prompts.harden(workflow[:name], source, analysis_json, workflow[:decision])
+      prompt = Prompts.harden(ctrl_name, source, analysis_json, decision)
       result = claude_call(prompt)
       parsed = parse_json_response(result)
 
-      write_sidecar(workflow[:full_path], "hardened.json", JSON.pretty_generate(parsed))
+      write_sidecar(source_path, "hardened.json", JSON.pretty_generate(parsed))
 
       @mutex.synchronize do
-        workflow[:original_source] = source
+        wf = @state[:workflows][name]
+        wf[:original_source] = source
         if parsed["hardened_source"]
-          File.write(workflow[:full_path], parsed["hardened_source"])
+          safe_write(wf[:full_path], parsed["hardened_source"])
         end
-        workflow[:hardened] = parsed
-        workflow[:status] = "hardened"
-        workflow[:prompts][:harden] = prompt
+        wf[:hardened] = parsed
+        wf[:status] = "hardened"
+        wf[:prompts][:harden] = prompt
       end
     rescue => e
       @mutex.synchronize do
-        workflow[:error] = e.message
-        workflow[:status] = "error"
-        workflow[:phase] = "errored"
+        wf = @state[:workflows][name]
+        wf[:error] = e.message
+        wf[:status] = "error"
+        wf[:phase] = "errored"
         add_error("Hardening failed for #{name}: #{e.message}")
       end
       return
@@ -229,15 +239,17 @@ class Pipeline
   MAX_CI_FIX_ATTEMPTS = 2
 
   def run_testing(name)
-    workflow = nil
+    source_path = ctrl_name = nil
     @mutex.synchronize do
       workflow = @state[:workflows][name]
       return unless workflow[:status] == "hardened"
       workflow[:phase] = "testing"
       workflow[:status] = "testing"
+      source_path = workflow[:full_path]
+      ctrl_name = workflow[:name]
     end
 
-    test_file = derive_test_path(workflow[:full_path])
+    test_file = derive_test_path(source_path)
     test_cmd = if test_file && File.exist?(test_file)
       "bin/rails test #{test_file}"
     else
@@ -248,7 +260,6 @@ class Pipeline
     passed = false
 
     begin
-      require "open3"
       output, status = Open3.capture2e(test_cmd, chdir: @rails_root)
       attempts << { attempt: 1, command: test_cmd, passed: status.success?, output: output }
 
@@ -257,30 +268,33 @@ class Pipeline
       else
         # Attempt Claude-assisted fixes
         MAX_FIX_ATTEMPTS.times do |i|
+          analysis_json = nil
           @mutex.synchronize do
-            workflow[:phase] = "fixing_tests"
-            workflow[:status] = "fixing_tests"
+            wf = @state[:workflows][name]
+            wf[:phase] = "fixing_tests"
+            wf[:status] = "fixing_tests"
+            analysis_json = wf[:analysis].to_json
           end
 
-          hardened_source = File.read(workflow[:full_path])
-          analysis_json = workflow[:analysis].to_json
-          prompt = Prompts.fix_tests(workflow[:name], hardened_source, output, analysis_json)
+          hardened_source = File.read(source_path)
+          prompt = Prompts.fix_tests(ctrl_name, hardened_source, output, analysis_json)
 
           fix_result = claude_call(prompt)
           parsed = parse_json_response(fix_result)
 
           @mutex.synchronize do
-            workflow[:prompts][:fix_tests] = prompt
+            @state[:workflows][name][:prompts][:fix_tests] = prompt
           end
 
           if parsed["hardened_source"]
-            File.write(workflow[:full_path], parsed["hardened_source"])
+            safe_write(source_path, parsed["hardened_source"])
           end
 
           # Re-run tests
           @mutex.synchronize do
-            workflow[:phase] = "testing"
-            workflow[:status] = "testing"
+            wf = @state[:workflows][name]
+            wf[:phase] = "testing"
+            wf[:status] = "testing"
           end
 
           output, status = Open3.capture2e(test_cmd, chdir: @rails_root)
@@ -302,25 +316,27 @@ class Pipeline
 
       # Write test results sidecar
       test_results = { controller: name, passed: passed, attempts: attempts }
-      write_sidecar(workflow[:full_path], "test_results.json", JSON.pretty_generate(test_results))
+      write_sidecar(source_path, "test_results.json", JSON.pretty_generate(test_results))
 
       @mutex.synchronize do
-        workflow[:test_results] = test_results
+        wf = @state[:workflows][name]
+        wf[:test_results] = test_results
         if passed
-          workflow[:status] = "tested"
-          workflow[:phase] = "tested"
+          wf[:status] = "tested"
+          wf[:phase] = "tested"
         else
-          workflow[:status] = "tests_failed"
-          workflow[:phase] = "tests_failed"
+          wf[:status] = "tests_failed"
+          wf[:phase] = "tests_failed"
           add_error("Tests still failing for #{name} after #{attempts.length} attempt(s)")
           return
         end
       end
     rescue => e
       @mutex.synchronize do
-        workflow[:error] = e.message
-        workflow[:status] = "error"
-        workflow[:phase] = "errored"
+        wf = @state[:workflows][name]
+        wf[:error] = e.message
+        wf[:status] = "error"
+        wf[:phase] = "errored"
         add_error("Testing failed for #{name}: #{e.message}")
       end
       return
@@ -350,45 +366,48 @@ class Pipeline
   ].freeze
 
   def run_ci_checks(name)
-    workflow = nil
+    source_path = ctrl_name = controller_relative = nil
     @mutex.synchronize do
       workflow = @state[:workflows][name]
       return unless workflow[:status] == "tested"
       workflow[:phase] = "ci_checking"
       workflow[:status] = "ci_checking"
+      source_path = workflow[:full_path]
+      ctrl_name = workflow[:name]
+      controller_relative = workflow[:path]
     end
 
     begin
-      require "open3"
-      controller_relative = workflow[:path]
       fix_attempts = []
       checks = run_all_ci_checks(controller_relative)
       passed = checks.all? { |c| c[:passed] }
 
       unless passed
         MAX_CI_FIX_ATTEMPTS.times do |i|
+          analysis_json = nil
           @mutex.synchronize do
-            workflow[:phase] = "fixing_ci"
-            workflow[:status] = "fixing_ci"
+            wf = @state[:workflows][name]
+            wf[:phase] = "fixing_ci"
+            wf[:status] = "fixing_ci"
+            analysis_json = wf[:analysis].to_json
           end
 
           failed_output = checks.reject { |c| c[:passed] }.map { |c|
             "== #{c[:name]} (#{c[:command]}) ==\n#{c[:output]}"
           }.join("\n\n")
 
-          hardened_source = File.read(workflow[:full_path])
-          analysis_json = workflow[:analysis].to_json
-          prompt = Prompts.fix_ci(workflow[:name], hardened_source, failed_output, analysis_json)
+          hardened_source = File.read(source_path)
+          prompt = Prompts.fix_ci(ctrl_name, hardened_source, failed_output, analysis_json)
 
           fix_result = claude_call(prompt)
           parsed = parse_json_response(fix_result)
 
           @mutex.synchronize do
-            workflow[:prompts][:fix_ci] = prompt
+            @state[:workflows][name][:prompts][:fix_ci] = prompt
           end
 
           if parsed["hardened_source"]
-            File.write(workflow[:full_path], parsed["hardened_source"])
+            safe_write(source_path, parsed["hardened_source"])
           end
 
           fix_attempts << {
@@ -398,8 +417,9 @@ class Pipeline
           }
 
           @mutex.synchronize do
-            workflow[:phase] = "ci_checking"
-            workflow[:status] = "ci_checking"
+            wf = @state[:workflows][name]
+            wf[:phase] = "ci_checking"
+            wf[:status] = "ci_checking"
           end
 
           checks = run_all_ci_checks(controller_relative)
@@ -414,25 +434,27 @@ class Pipeline
         checks: checks,
         fix_attempts: fix_attempts
       }
-      write_sidecar(workflow[:full_path], "ci_results.json", JSON.pretty_generate(ci_results))
+      write_sidecar(source_path, "ci_results.json", JSON.pretty_generate(ci_results))
 
       @mutex.synchronize do
-        workflow[:ci_results] = ci_results
+        wf = @state[:workflows][name]
+        wf[:ci_results] = ci_results
         if passed
-          workflow[:status] = "ci_passed"
-          workflow[:phase] = "ci_passed"
+          wf[:status] = "ci_passed"
+          wf[:phase] = "ci_passed"
         else
-          workflow[:status] = "ci_failed"
-          workflow[:phase] = "ci_failed"
+          wf[:status] = "ci_failed"
+          wf[:phase] = "ci_failed"
           add_error("CI checks still failing for #{name} after #{fix_attempts.length} fix attempt(s)")
           return
         end
       end
     rescue => e
       @mutex.synchronize do
-        workflow[:error] = e.message
-        workflow[:status] = "error"
-        workflow[:phase] = "errored"
+        wf = @state[:workflows][name]
+        wf[:error] = e.message
+        wf[:status] = "error"
+        wf[:phase] = "errored"
         add_error("CI checking failed for #{name}: #{e.message}")
       end
       return
@@ -455,37 +477,40 @@ class Pipeline
   # ── Phase 4: Verification ─────────────────────────────────
 
   def run_verification(name)
-    workflow = nil
+    source_path = ctrl_name = original_source = hardened_source = analysis_json = nil
     @mutex.synchronize do
       workflow = @state[:workflows][name]
       return unless workflow[:status] == "ci_passed"
       workflow[:phase] = "verifying"
       workflow[:status] = "verifying"
-    end
-
-    begin
+      source_path = workflow[:full_path]
+      ctrl_name = workflow[:name]
       original_source = workflow[:original_source]
       hardened_source = workflow.dig(:hardened, "hardened_source") || ""
       analysis_json = workflow[:analysis].to_json
+    end
 
-      prompt = Prompts.verify(workflow[:name], original_source, hardened_source, analysis_json)
+    begin
+      prompt = Prompts.verify(ctrl_name, original_source, hardened_source, analysis_json)
       result = claude_call(prompt)
       parsed = parse_json_response(result)
 
-      write_sidecar(workflow[:full_path], "verification.json", JSON.pretty_generate(parsed))
+      write_sidecar(source_path, "verification.json", JSON.pretty_generate(parsed))
 
       @mutex.synchronize do
-        workflow[:verification] = parsed
-        workflow[:status] = "verified"
-        workflow[:phase] = "complete"
-        workflow[:completed_at] = Time.now.iso8601
-        workflow[:prompts][:verify] = prompt
+        wf = @state[:workflows][name]
+        wf[:verification] = parsed
+        wf[:status] = "verified"
+        wf[:phase] = "complete"
+        wf[:completed_at] = Time.now.iso8601
+        wf[:prompts][:verify] = prompt
       end
     rescue => e
       @mutex.synchronize do
-        workflow[:error] = e.message
-        workflow[:status] = "error"
-        workflow[:phase] = "errored"
+        wf = @state[:workflows][name]
+        wf[:error] = e.message
+        wf[:status] = "error"
+        wf[:phase] = "errored"
         add_error("Verification failed for #{name}: #{e.message}")
       end
     end
@@ -494,25 +519,37 @@ class Pipeline
   # ── Ad-hoc Queries ──────────────────────────────────────────
 
   def ask_question(name, question)
-    workflow = @mutex.synchronize { @state[:workflows][name] }
-    return { error: "No workflow for #{name}" } unless workflow
+    source_path = ctrl_name = analysis_json = nil
+    @mutex.synchronize do
+      workflow = @state[:workflows][name]
+      return { error: "No workflow for #{name}" } unless workflow
+      source_path = workflow[:full_path]
+      ctrl_name = workflow[:name]
+      analysis_json = (workflow[:analysis] || {}).to_json
+    end
 
-    source = File.read(workflow[:full_path])
-    analysis_json = (workflow[:analysis] || {}).to_json
-    prompt = Prompts.ask(workflow[:name], source, analysis_json, question)
+    source = File.read(source_path)
+    prompt = Prompts.ask(ctrl_name, source, analysis_json, question)
 
     claude_call(prompt)
   end
 
   def explain_finding(name, finding_id)
-    workflow = @mutex.synchronize { @state[:workflows][name] }
-    return { error: "No workflow for #{name}" } unless workflow
+    source_path = ctrl_name = finding_json = nil
+    @mutex.synchronize do
+      workflow = @state[:workflows][name]
+      return { error: "No workflow for #{name}" } unless workflow
 
-    finding = workflow.dig(:analysis, "findings")&.find { |f| f["id"] == finding_id }
-    return { error: "Finding not found" } unless finding
+      finding = workflow.dig(:analysis, "findings")&.find { |f| f["id"] == finding_id }
+      return { error: "Finding not found" } unless finding
 
-    source = File.read(workflow[:full_path])
-    prompt = Prompts.explain(workflow[:name], source, finding.to_json)
+      source_path = workflow[:full_path]
+      ctrl_name = workflow[:name]
+      finding_json = finding.to_json
+    end
+
+    source = File.read(source_path)
+    prompt = Prompts.explain(ctrl_name, source, finding_json)
 
     claude_call(prompt)
   end
@@ -528,14 +565,14 @@ class Pipeline
 
   # ── Helpers ─────────────────────────────────────────────────
 
-  def to_json
-    @mutex.synchronize { @state.to_json }
+  def to_json(*args)
+    @mutex.synchronize { @state.to_json(*args) }
   end
 
   private
 
   def find_controller(name)
-    entry = @state[:controllers].find { |c| c[:name] == name }
+    entry = @mutex.synchronize { @state[:controllers].find { |c| c[:name] == name } }
     raise "Controller not found: #{name}" unless entry
     entry
   end
@@ -562,7 +599,6 @@ class Pipeline
   end
 
   def claude_call(prompt)
-    require "open3"
     result, status = Open3.capture2e("claude", "-p", prompt)
 
     unless status.success?
@@ -581,7 +617,7 @@ class Pipeline
     if start && finish && finish > start
       JSON.parse(raw[start..finish])
     else
-      { "parse_error" => "No JSON object found in response", "raw_response" => raw[0..1000] }
+      raise "Failed to parse JSON from claude response: #{raw[0..200]}"
     end
   end
 
@@ -589,8 +625,14 @@ class Pipeline
     @state[:errors] << { message: msg, at: Time.now.iso8601 }
   end
 
+  def safe_write(path, content)
+    real = File.realpath(File.dirname(path))
+    allowed = File.realpath(File.join(@rails_root, "app", "controllers"))
+    raise "Path #{path} escapes controllers directory" unless real.start_with?(allowed)
+    File.write(path, content)
+  end
+
   def run_all_ci_checks(controller_relative)
-    require "open3"
     CI_CHECKS.map do |check|
       cmd = check[:cmd].call(controller_relative)
       output, status = Open3.capture2e(cmd, chdir: @rails_root)

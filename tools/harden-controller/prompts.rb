@@ -1,6 +1,6 @@
 module Prompts
   # Phase 1: Analyze a controller for hardening opportunities
-  def self.analyze(controller_name, controller_source, routes_info: nil)
+  def self.analyze(controller_name, controller_source)
     <<~PROMPT
       You are a Rails security hardening specialist. Analyze this controller and identify all hardening opportunities.
 
@@ -9,8 +9,6 @@ module Prompts
       ```ruby
       #{controller_source}
       ```
-
-      #{"## Routes\n```\n#{routes_info}\n```" if routes_info}
 
       ## Your Task
 
@@ -295,8 +293,6 @@ module Prompts
     PROMPT
   end
 
-  private
-
   def self.decision_instructions(decision)
     case decision["action"]
     when "approve"
@@ -310,4 +306,6 @@ module Prompts
       "Apply all suggested fixes."
     end
   end
+
+  private_class_method :decision_instructions
 end
