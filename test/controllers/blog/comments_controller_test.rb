@@ -57,6 +57,7 @@ class Blog::CommentsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "should toggle like on comment" do
+    sign_in_as(core_users(:alice)) # post author
     @blog_comment.unset!
     patch toggle_like_blog_comment_url(@blog_comment)
     assert_redirected_to blog_post_url(@blog_post)
@@ -65,6 +66,7 @@ class Blog::CommentsControllerTest < ActionDispatch::IntegrationTest
   end
 
   test "should toggle unlike on comment" do
+    sign_in_as(core_users(:alice)) # post author
     @blog_comment.liked!
     patch toggle_like_blog_comment_url(@blog_comment)
     assert_redirected_to blog_post_url(@blog_post)

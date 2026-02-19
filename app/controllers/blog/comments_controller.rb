@@ -1,12 +1,17 @@
 class Blog::CommentsController < ApplicationController
   before_action :require_authentication, except: :index
+  rate_limit to: 30, within: 1.minute, only: :index
   rate_limit to: 5, within: 1.minute, only: :create
+  rate_limit to: 5, within: 1.minute, only: :update
+  rate_limit to: 5, within: 1.minute, only: :destroy
   rate_limit to: 10, within: 1.minute, only: :toggle_like
-  before_action :set_blog_comment, only: %i[ edit update destroy ]
+  before_action :set_blog_comment, only: %i[ edit update destroy toggle_like ]
+  before_action :authorize_comment_owner!, only: %i[ edit update destroy ]
+  before_action :authorize_post_author!, only: :toggle_like
 
   # GET /blog/comments or /blog/comments.json
   def index
-    page = [ params.fetch(:page, 1).to_i, 1 ].max
+    page = params.fetch(:page, 1).to_i.clamp(1, 1000)
     @blog_comments = Blog::Comment.includes(:post, :user).order(created_at: :desc).limit(25).offset((page - 1) * 25)
   end
 
@@ -50,16 +55,17 @@ class Blog::CommentsController < ApplicationController
   end
 
   def toggle_like
-    @blog_comment = Blog::Comment.find(params.expect(:id))
-    new_status = @blog_comment.liked? ? :unset : :liked
+    @blog_comment.with_lock do
+      new_status = @blog_comment.liked? ? :unset : :liked
 
-    respond_to do |format|
-      if @blog_comment.update(like_status: new_status)
-        format.html { redirect_to blog_post_path(@blog_comment.post), status: :see_other }
-        format.json { render :show, status: :ok, location: @blog_comment }
-      else
-        format.html { redirect_to blog_post_path(@blog_comment.post), alert: "Could not update like.", status: :see_other }
-        format.json { render json: { errors: @blog_comment.errors.full_messages }, status: :unprocessable_entity }
+      respond_to do |format|
+        if @blog_comment.update(like_status: new_status)
+          format.html { redirect_to blog_post_path(@blog_comment.post), status: :see_other }
+          format.json { render :show, status: :ok, location: @blog_comment }
+        else
+          format.html { redirect_to blog_post_path(@blog_comment.post), alert: "Could not update like.", status: :see_other }
+          format.json { render json: { errors: @blog_comment.errors.full_messages }, status: :unprocessable_entity }
+        end
       end
     end
   end
@@ -78,6 +84,24 @@ class Blog::CommentsController < ApplicationController
     # Use callbacks to share common setup or constraints between actions.
     def set_blog_comment
       @blog_comment = Blog::Comment.find(params.expect(:id))
+    end
+
+    def authorize_comment_owner!
+      unless @blog_comment.user == current_user
+        respond_to do |format|
+          format.html { redirect_to blog_post_path(@blog_comment.post), alert: "Not authorized.", status: :see_other }
+          format.json { render json: { error: "Not authorized" }, status: :forbidden }
+        end
+      end
+    end
+
+    def authorize_post_author!
+      unless @blog_comment.post.user == current_user
+        respond_to do |format|
+          format.html { redirect_to blog_post_path(@blog_comment.post), alert: "Not authorized.", status: :see_other }
+          format.json { render json: { error: "Not authorized" }, status: :forbidden }
+        end
+      end
     end
 
     # Only allow a list of trusted parameters through.
