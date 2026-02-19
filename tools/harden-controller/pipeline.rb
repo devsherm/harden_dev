@@ -3,33 +3,36 @@ require "fileutils"
 require_relative "prompts"
 
 class Pipeline
-  PHASES = %w[idle discovering awaiting_selection analyzing awaiting_decisions hardening verifying complete errored].freeze
+  ACTIVE_PHASES = %w[analyzing hardening verifying].freeze
 
   attr_reader :state
 
   def initialize(rails_root: ".")
     @rails_root = rails_root
+    @mutex = Mutex.new
     @state = {
-      phase: "idle",
-      controllers: [],
-      controller: nil,
-      errors: [],
-      started_at: nil,
-      completed_at: nil
+      phase: "idle",       # global: "idle" | "discovering" | "ready"
+      controllers: [],     # discovery list (unchanged)
+      workflows: {},       # keyed by controller name
+      errors: []
     }
   end
 
   # ── Discovery ──────────────────────────────────────────────
 
   def discover_controllers
-    @state[:phase] = "discovering"
+    @mutex.synchronize { @state[:phase] = "discovering" }
 
     controllers_dir = File.join(@rails_root, "app", "controllers")
     unless Dir.exist?(controllers_dir)
-      add_error("Controllers directory not found: #{controllers_dir}")
-      @state[:phase] = "errored"
+      @mutex.synchronize do
+        add_error("Controllers directory not found: #{controllers_dir}")
+        @state[:phase] = "ready"
+      end
       return
     end
+
+    discovered = []
 
     Dir.glob(File.join(controllers_dir, "**", "*_controller.rb")).each do |path|
       basename = File.basename(path, ".rb")
@@ -46,7 +49,6 @@ class Pipeline
       has_hardened = File.exist?(hardened_file)
       has_verified = File.exist?(verified_file)
 
-      # Parse analysis.json for risk level and finding counts
       overall_risk = nil
       finding_counts = nil
       if has_analysis
@@ -61,7 +63,7 @@ class Pipeline
         end
       end
 
-      @state[:controllers] << {
+      discovered << {
         name: basename,
         path: relative,
         full_path: path,
@@ -77,224 +79,248 @@ class Pipeline
 
     # Sort: needs-attention first, then by risk (high > medium > low > nil), then alphabetical
     risk_order = { "high" => 0, "medium" => 1, "low" => 2 }
-    @state[:controllers].sort_by! do |c|
+    discovered.sort_by! do |c|
       needs_attention = (c[:stale] == true || c[:stale].nil?) ? 0 : 1
       risk = risk_order.fetch(c[:overall_risk], 3)
       [ needs_attention, risk, c[:name] ]
     end
 
-    @state[:phase] = "awaiting_selection"
+    @mutex.synchronize do
+      @state[:controllers] = discovered
+      @state[:phase] = "ready"
+    end
   end
 
-  # ── Selection ─────────────────────────────────────────────
+  # ── Selection / Analysis ─────────────────────────────────────
 
   def select_controller(name)
-    entry = @state[:controllers].find { |c| c[:name] == name }
-    raise "Controller not found: #{name}" unless entry
-
-    @state[:controller] = build_controller(entry)
-    run_analysis
+    entry = find_controller(name)
+    @mutex.synchronize do
+      @state[:workflows][name] = build_workflow(entry)
+    end
+    run_analysis(name)
   end
 
   def load_existing_analysis(name)
-    entry = @state[:controllers].find { |c| c[:name] == name }
-    raise "Controller not found: #{name}" unless entry
+    entry = find_controller(name)
 
     analysis_file = sidecar_path(entry[:full_path], "analysis.json")
     raise "No existing analysis for #{name}" unless File.exist?(analysis_file)
 
-    @state[:controller] = build_controller(entry)
-
     raw = File.read(analysis_file)
     parsed = parse_json_response(raw)
-    @state[:controller][:analysis] = parsed
-    @state[:controller][:status] = "analyzed"
-    @state[:phase] = "awaiting_decisions"
+
+    @mutex.synchronize do
+      workflow = @state[:workflows][name] ||= build_workflow(entry)
+      workflow[:analysis] = parsed
+      workflow[:status] = "analyzed"
+      workflow[:phase] = "awaiting_decisions"
+    end
   end
 
-  # ── Phase 1: Analysis ───────────────────────────────────────
+  # ── Phase 1: Analysis ──────────────────────────────────────
 
-  def run_analysis
-    @state[:phase] = "analyzing"
-    @state[:started_at] = Time.now.iso8601
-    controller = @state[:controller]
+  def run_analysis(name)
+    workflow = nil
+    @mutex.synchronize do
+      workflow = @state[:workflows][name]
+      workflow[:phase] = "analyzing"
+      workflow[:status] = "analyzing"
+      workflow[:started_at] = Time.now.iso8601
+      workflow[:error] = nil
+    end
 
     begin
-      controller[:status] = "analyzing"
-      source = File.read(controller[:full_path])
-      prompt = Prompts.analyze(controller[:name], source)
+      source = File.read(workflow[:full_path])
+      prompt = Prompts.analyze(workflow[:name], source)
 
       result = claude_call(prompt)
       parsed = parse_json_response(result)
 
-      ensure_harden_dir(controller[:full_path])
-      write_sidecar(controller[:full_path], "analysis.json", result)
+      ensure_harden_dir(workflow[:full_path])
+      write_sidecar(workflow[:full_path], "analysis.json", result)
 
-      controller[:analysis] = parsed
-      controller[:status] = "analyzed"
+      @mutex.synchronize do
+        workflow[:analysis] = parsed
+        workflow[:status] = "analyzed"
+        workflow[:phase] = "awaiting_decisions"
+        workflow[:prompts][:analyze] = prompt
+      end
     rescue => e
-      controller[:error] = e.message
-      controller[:status] = "error"
-      add_error("Analysis failed for #{controller[:name]}: #{e.message}")
+      @mutex.synchronize do
+        workflow[:error] = e.message
+        workflow[:status] = "error"
+        workflow[:phase] = "errored"
+        add_error("Analysis failed for #{name}: #{e.message}")
+      end
+    end
+  end
+
+  # ── Phase 2: Accept Decision ───────────────────────────────
+
+  def submit_decision(name, decision)
+    @mutex.synchronize do
+      workflow = @state[:workflows][name]
+      raise "No workflow for #{name}" unless workflow
+      workflow[:decision] = decision
+    end
+    run_hardening(name)
+  end
+
+  # ── Phase 3: Hardening ────────────────────────────────────
+
+  def run_hardening(name)
+    workflow = nil
+    @mutex.synchronize do
+      workflow = @state[:workflows][name]
+
+      if workflow[:decision] && workflow[:decision]["action"] == "skip"
+        workflow[:status] = "skipped"
+        workflow[:phase] = "skipped"
+        workflow[:completed_at] = Time.now.iso8601
+        return
+      end
+
+      workflow[:phase] = "hardening"
+      workflow[:status] = "hardening"
     end
 
-    @state[:phase] = "awaiting_decisions"
-  end
+    begin
+      source = File.read(workflow[:full_path])
+      analysis_json = workflow[:analysis].to_json
 
-  # ── Phase 2: Accept Decision ────────────────────────────────
+      prompt = Prompts.harden(workflow[:name], source, analysis_json, workflow[:decision])
+      result = claude_call(prompt)
+      parsed = parse_json_response(result)
 
-  def submit_decision(decision)
-    @state[:controller][:decision] = decision
-    run_hardening
-  end
+      write_sidecar(workflow[:full_path], "hardened.json", result)
 
-  # ── Phase 3: Hardening ──────────────────────────────────────
-
-  def run_hardening
-    @state[:phase] = "hardening"
-    controller = @state[:controller]
-
-    if controller[:decision] && controller[:decision]["action"] == "skip"
-      controller[:status] = "skipped"
-      @state[:phase] = "complete"
-      @state[:completed_at] = Time.now.iso8601
+      @mutex.synchronize do
+        workflow[:original_source] = source
+        if parsed["hardened_source"]
+          File.write(workflow[:full_path], parsed["hardened_source"])
+        end
+        workflow[:hardened] = parsed
+        workflow[:status] = "hardened"
+        workflow[:prompts][:harden] = prompt
+      end
+    rescue => e
+      @mutex.synchronize do
+        workflow[:error] = e.message
+        workflow[:status] = "error"
+        workflow[:phase] = "errored"
+        add_error("Hardening failed for #{name}: #{e.message}")
+      end
       return
     end
 
-    begin
-      controller[:status] = "hardening"
-      source = File.read(controller[:full_path])
-      controller[:original_source] = source
-      analysis_json = controller[:analysis].to_json
+    run_verification(name)
+  end
 
-      prompt = Prompts.harden(controller[:name], source, analysis_json, controller[:decision])
+  # ── Phase 4: Verification ─────────────────────────────────
+
+  def run_verification(name)
+    workflow = nil
+    @mutex.synchronize do
+      workflow = @state[:workflows][name]
+      return unless workflow[:status] == "hardened"
+      workflow[:phase] = "verifying"
+      workflow[:status] = "verifying"
+    end
+
+    begin
+      original_source = workflow[:original_source]
+      hardened_source = workflow.dig(:hardened, "hardened_source") || ""
+      analysis_json = workflow[:analysis].to_json
+
+      prompt = Prompts.verify(workflow[:name], original_source, hardened_source, analysis_json)
       result = claude_call(prompt)
       parsed = parse_json_response(result)
 
-      write_sidecar(controller[:full_path], "hardened.json", result)
+      write_sidecar(workflow[:full_path], "verification.json", result)
 
-      if parsed["hardened_source"]
-        File.write(controller[:full_path], parsed["hardened_source"])
+      @mutex.synchronize do
+        workflow[:verification] = parsed
+        workflow[:status] = "verified"
+        workflow[:phase] = "complete"
+        workflow[:completed_at] = Time.now.iso8601
+        workflow[:prompts][:verify] = prompt
       end
-
-      controller[:hardened] = parsed
-      controller[:status] = "hardened"
     rescue => e
-      controller[:error] = e.message
-      controller[:status] = "error"
-      add_error("Hardening failed for #{controller[:name]}: #{e.message}")
+      @mutex.synchronize do
+        workflow[:error] = e.message
+        workflow[:status] = "error"
+        workflow[:phase] = "errored"
+        add_error("Verification failed for #{name}: #{e.message}")
+      end
     end
-
-    run_verification
   end
 
-  # ── Phase 4: Verification ───────────────────────────────────
+  # ── Ad-hoc Queries ──────────────────────────────────────────
 
-  def run_verification
-    @state[:phase] = "verifying"
-    controller = @state[:controller]
+  def ask_question(name, question)
+    workflow = @mutex.synchronize { @state[:workflows][name] }
+    return { error: "No workflow for #{name}" } unless workflow
 
-    return unless controller[:status] == "hardened"
-
-    begin
-      controller[:status] = "verifying"
-      original_source = controller[:original_source]
-      hardened_source = controller.dig(:hardened, "hardened_source") || ""
-      analysis_json = controller[:analysis].to_json
-
-      prompt = Prompts.verify(controller[:name], original_source, hardened_source, analysis_json)
-      result = claude_call(prompt)
-      parsed = parse_json_response(result)
-
-      write_sidecar(controller[:full_path], "verification.json", result)
-
-      controller[:verification] = parsed
-      controller[:status] = "verified"
-    rescue => e
-      controller[:error] = e.message
-      controller[:status] = "error"
-      add_error("Verification failed for #{controller[:name]}: #{e.message}")
-    end
-
-    @state[:phase] = "complete"
-    @state[:completed_at] = Time.now.iso8601
-  end
-
-  # ── Ad-hoc Queries ─────────────────────────────────────────
-
-  def ask_question(question)
-    controller = @state[:controller]
-    return { error: "No active controller" } unless controller
-
-    source = File.read(controller[:full_path])
-    analysis_json = (controller[:analysis] || {}).to_json
-    prompt = Prompts.ask(controller[:name], source, analysis_json, question)
+    source = File.read(workflow[:full_path])
+    analysis_json = (workflow[:analysis] || {}).to_json
+    prompt = Prompts.ask(workflow[:name], source, analysis_json, question)
 
     claude_call(prompt)
   end
 
-  def explain_finding(finding_id)
-    controller = @state[:controller]
-    return { error: "No active controller" } unless controller
+  def explain_finding(name, finding_id)
+    workflow = @mutex.synchronize { @state[:workflows][name] }
+    return { error: "No workflow for #{name}" } unless workflow
 
-    finding = controller.dig(:analysis, "findings")&.find { |f| f["id"] == finding_id }
+    finding = workflow.dig(:analysis, "findings")&.find { |f| f["id"] == finding_id }
     return { error: "Finding not found" } unless finding
 
-    source = File.read(controller[:full_path])
-    prompt = Prompts.explain(controller[:name], source, finding.to_json)
+    source = File.read(workflow[:full_path])
+    prompt = Prompts.explain(workflow[:name], source, finding.to_json)
 
     claude_call(prompt)
   end
 
-  def retry_analysis
-    controller = @state[:controller]
-    return { error: "No active controller" } unless controller
+  def retry_analysis(name)
+    workflow = @mutex.synchronize { @state[:workflows][name] }
+    return { error: "No workflow for #{name}" } unless workflow
 
-    Thread.new do
-      begin
-        controller[:error] = nil
-        controller[:status] = "analyzing"
-        source = File.read(controller[:full_path])
-        prompt = Prompts.analyze(controller[:name], source)
-
-        result = claude_call(prompt)
-        parsed = parse_json_response(result)
-
-        write_sidecar(controller[:full_path], "analysis.json", result)
-        controller[:analysis] = parsed
-        controller[:status] = "analyzed"
-      rescue => e
-        controller[:error] = e.message
-        controller[:status] = "error"
-      end
-    end
+    Thread.new { run_analysis(name) }
 
     { status: "retrying" }
   end
 
-  # ── Helpers ────────────────────────────────────────────────
-
-  def controller
-    @state[:controller]
-  end
+  # ── Helpers ─────────────────────────────────────────────────
 
   def to_json
-    @state.to_json
+    @mutex.synchronize { @state.to_json }
   end
 
   private
 
-  def build_controller(entry)
+  def find_controller(name)
+    entry = @state[:controllers].find { |c| c[:name] == name }
+    raise "Controller not found: #{name}" unless entry
+    entry
+  end
+
+  def build_workflow(entry)
     {
       name: entry[:name],
       path: entry[:path],
       full_path: entry[:full_path],
+      phase: "pending",
       status: "pending",
       analysis: nil,
       decision: nil,
       hardened: nil,
       verification: nil,
-      error: nil
+      error: nil,
+      started_at: nil,
+      completed_at: nil,
+      original_source: nil,
+      prompts: { analyze: nil, harden: nil, verify: nil }
     }
   end
 
@@ -313,8 +339,6 @@ class Pipeline
     cleaned = raw.gsub(/\A```json\s*/, "").gsub(/\s*```\z/, "").strip
     JSON.parse(cleaned)
   rescue JSON::ParserError
-    # Claude sometimes emits preamble text before the JSON object —
-    # extract the outermost { ... } and retry.
     start = raw.index("{")
     finish = raw.rindex("}")
     if start && finish && finish > start

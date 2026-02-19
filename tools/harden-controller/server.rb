@@ -49,29 +49,40 @@ end
 # Analyze a single selected controller
 post "/pipeline/analyze" do
   content_type :json
-  halt 409, { error: "Not in selection phase" }.to_json unless $pipeline.state[:phase] == "awaiting_selection"
+  halt 409, { error: "Discovery not complete" }.to_json unless $pipeline.state[:phase] == "ready"
 
   body = JSON.parse(request.body.read)
   controller = body["controller"]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
+  # Guard: workflow must not already be in an active phase
+  workflow = $pipeline.state[:workflows][controller]
+  if workflow && Pipeline::ACTIVE_PHASES.include?(workflow[:phase])
+    halt 409, { error: "#{controller} is already #{workflow[:phase]}" }.to_json
+  end
+
   Thread.new { $pipeline.select_controller(controller) }
 
-  { status: "analyzing", phase: "analyzing" }.to_json
+  { status: "analyzing", controller: controller }.to_json
 end
 
 # Load existing analysis from sidecar file (skip re-running claude)
 post "/pipeline/load-analysis" do
   content_type :json
-  halt 409, { error: "Not in selection phase" }.to_json unless $pipeline.state[:phase] == "awaiting_selection"
+  halt 409, { error: "Discovery not complete" }.to_json unless $pipeline.state[:phase] == "ready"
 
   body = JSON.parse(request.body.read)
   controller = body["controller"]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
+  workflow = $pipeline.state[:workflows][controller]
+  if workflow && Pipeline::ACTIVE_PHASES.include?(workflow[:phase])
+    halt 409, { error: "#{controller} is already #{workflow[:phase]}" }.to_json
+  end
+
   begin
     $pipeline.load_existing_analysis(controller)
-    { status: "loaded", phase: "awaiting_decisions" }.to_json
+    { status: "loaded", controller: controller }.to_json
   rescue => e
     halt 422, { error: e.message }.to_json
   end
@@ -114,43 +125,58 @@ end
 
 # ── Phase 2: Human Decision ─────────────────────────────────
 
-# Submit decision for the active controller
-# Body: { "action": "approve|selective|skip", "approved_findings": [...] }
+# Submit decision for a controller
+# Body: { "controller": "...", "action": "approve|selective|skip", "approved_findings": [...] }
 post "/decisions" do
   content_type :json
-  decision = JSON.parse(request.body.read)
+  body = JSON.parse(request.body.read)
+  controller = body.delete("controller")
+  halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
-  Thread.new { $pipeline.submit_decision(decision) }
+  workflow = $pipeline.state[:workflows][controller]
+  halt 404, { error: "No workflow for #{controller}" }.to_json unless workflow
+  halt 409, { error: "#{controller} is not awaiting decisions" }.to_json unless workflow[:phase] == "awaiting_decisions"
 
-  { status: "decision_received", phase: "hardening" }.to_json
+  Thread.new { $pipeline.submit_decision(controller, body) }
+
+  { status: "decision_received", controller: controller }.to_json
 end
 
 # ── Ad-hoc Queries ──────────────────────────────────────────
 
-# Ask a free-form question about the active controller
+# Ask a free-form question about a controller
 post "/ask" do
   content_type :json
   body = JSON.parse(request.body.read)
+  controller = body["controller"]
   question = body["question"]
+  halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
-  answer = $pipeline.ask_question(question)
-  { question: question, answer: answer }.to_json
+  answer = $pipeline.ask_question(controller, question)
+  { controller: controller, question: question, answer: answer }.to_json
 end
 
 # Explain a specific finding
 post "/explain/:finding_id" do
   content_type :json
+  body = JSON.parse(request.body.read)
+  controller = body["controller"]
   finding_id = params[:finding_id]
+  halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
-  explanation = $pipeline.explain_finding(finding_id)
-  { finding_id: finding_id, explanation: explanation }.to_json
+  explanation = $pipeline.explain_finding(controller, finding_id)
+  { controller: controller, finding_id: finding_id, explanation: explanation }.to_json
 end
 
 # ── Retry ────────────────────────────────────────────────────
 
 post "/pipeline/retry" do
   content_type :json
-  result = $pipeline.retry_analysis
+  body = JSON.parse(request.body.read)
+  controller = body["controller"]
+  halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
+
+  result = $pipeline.retry_analysis(controller)
   result.to_json
 end
 

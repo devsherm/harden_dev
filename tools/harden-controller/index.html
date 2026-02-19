@@ -26,44 +26,39 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
       background: var(--bg);
       color: var(--text);
-      padding: 2rem;
-      max-width: 1200px;
-      margin: 0 auto;
+      height: 100vh;
+      overflow: hidden;
     }
 
     header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 2rem;
-      padding-bottom: 1rem;
+      padding: 0.8rem 1.5rem;
       border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
     }
 
-    h1 { font-size: 1.4rem; font-weight: 600; }
+    h1 { font-size: 1.2rem; font-weight: 600; }
 
-    .phase-badge {
-      padding: 0.3rem 0.8rem;
-      border-radius: 4px;
+    .header-summary {
       font-size: 0.8rem;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      display: flex;
+      gap: 1rem;
+      align-items: center;
     }
 
-    .phase-idle { background: var(--border); }
-    .phase-discovering, .phase-analyzing { background: #2563eb33; color: var(--accent); }
-    .phase-awaiting_selection { background: #f59e0b33; color: var(--yellow); }
-    .phase-awaiting_decisions { background: #f59e0b33; color: var(--yellow); }
-    .phase-hardening { background: #8b5cf633; color: #a78bfa; }
-    .phase-verifying { background: #6366f133; color: #818cf8; }
-    .phase-complete { background: #22c55e33; color: var(--green); }
-    .phase-errored { background: #ef444433; color: var(--red); }
+    .header-summary .count { font-weight: 600; }
+    .header-summary .count-analyzing { color: var(--accent); }
+    .header-summary .count-awaiting { color: var(--yellow); }
+    .header-summary .count-complete { color: var(--green); }
+    .header-summary .count-errored { color: var(--red); }
 
     .controls {
       display: flex;
       gap: 0.5rem;
-      margin-bottom: 2rem;
+      align-items: center;
     }
 
     button {
@@ -83,8 +78,144 @@
     button.primary:hover { background: #1d4ed8; }
     button.approve { background: #16a34a33; border-color: #16a34a; color: var(--green); }
     button.skip { background: var(--surface); color: var(--text-muted); }
+    button.small { font-size: 0.75rem; padding: 0.25rem 0.5rem; }
 
-    .controllers { display: flex; flex-direction: column; gap: 1rem; }
+    /* ── Two-panel layout ──────────────────────────────────── */
+
+    .layout {
+      display: flex;
+      height: calc(100vh - 52px);
+    }
+
+    .sidebar {
+      width: 300px;
+      min-width: 300px;
+      border-right: 1px solid var(--border);
+      overflow-y: auto;
+      flex-shrink: 0;
+    }
+
+    .sidebar-header {
+      padding: 0.8rem 1rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .sidebar-group-label {
+      padding: 0.6rem 1rem 0.3rem;
+      font-size: 0.7rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .sidebar-item {
+      padding: 0.6rem 1rem;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      transition: background 0.1s;
+    }
+
+    .sidebar-item:hover { background: var(--surface-hover); }
+    .sidebar-item.selected { background: var(--surface); border-left: 2px solid var(--accent); }
+
+    .sidebar-item-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .sidebar-item-name {
+      font-family: monospace;
+      font-weight: 600;
+      font-size: 0.85rem;
+    }
+
+    .sidebar-item-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 0.3rem;
+      font-size: 0.75rem;
+    }
+
+    .sidebar-item-actions {
+      display: flex;
+      gap: 0.3rem;
+      margin-top: 0.4rem;
+    }
+
+    .sidebar-item-actions button {
+      font-size: 0.7rem;
+      padding: 0.2rem 0.5rem;
+    }
+
+    .workflow-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+      flex-shrink: 0;
+    }
+
+    .workflow-dot.pending { background: var(--text-muted); opacity: 0.4; }
+    .workflow-dot.analyzing { background: var(--accent); animation: pulse 1s infinite; }
+    .workflow-dot.awaiting_decisions { background: var(--yellow); }
+    .workflow-dot.hardening { background: #a78bfa; animation: pulse 1s infinite; }
+    .workflow-dot.verifying { background: #818cf8; animation: pulse 1s infinite; }
+    .workflow-dot.complete { background: var(--green); }
+    .workflow-dot.skipped { background: var(--text-muted); }
+    .workflow-dot.errored { background: var(--red); }
+    .workflow-dot.none { background: var(--text-muted); opacity: 0.2; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    /* ── Detail panel ──────────────────────────────────────── */
+
+    .detail-panel {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1.5rem;
+    }
+
+    .detail-empty {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+
+    .detail-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 1rem;
+    }
+
+    .detail-title {
+      font-size: 1.2rem;
+      font-weight: 600;
+      font-family: monospace;
+    }
+
+    .detail-actions {
+      display: flex;
+      gap: 0.4rem;
+      flex-shrink: 0;
+    }
 
     .controller-card {
       background: var(--surface);
@@ -123,11 +254,6 @@
     .status-verified .status-dot { background: var(--green); }
     .status-skipped .status-dot { background: var(--text-muted); }
     .status-error .status-dot { background: var(--red); }
-
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.3; }
-    }
 
     .findings { margin-top: 0.8rem; }
 
@@ -356,48 +482,6 @@
     .verification-review { background: #f59e0b1a; border: 1px solid #f59e0b33; }
     .verification-reject { background: #ef44441a; border: 1px solid #ef444433; }
 
-    .selection-panel {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 1.2rem;
-      margin-bottom: 1rem;
-    }
-
-    .selection-panel h3 {
-      font-size: 1rem;
-      margin-bottom: 0.8rem;
-    }
-
-    .selection-list {
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-    }
-
-    .selection-btn {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      width: 100%;
-      padding: 0.7rem 1rem;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      color: var(--text);
-      cursor: pointer;
-      font-size: 0.95rem;
-      transition: border-color 0.15s, background 0.15s;
-    }
-
-    .selection-btn:hover {
-      border-color: var(--accent);
-      background: var(--surface-hover);
-    }
-
-    .selection-btn .ctrl-name { font-family: monospace; font-weight: 600; }
-    .selection-btn .ctrl-path { font-size: 0.75rem; color: var(--text-muted); }
-
     .risk-badge {
       font-size: 0.7rem;
       padding: 0.15rem 0.5rem;
@@ -416,7 +500,7 @@
     .finding-counts .fc-medium { color: var(--orange); }
     .finding-counts .fc-low { color: var(--yellow); }
 
-    .phase-indicators { font-size: 0.75rem; display: inline-flex; gap: 0.6rem; }
+    .phase-indicators { font-size: 0.7rem; display: inline-flex; gap: 0.4rem; }
     .phase-indicators .phase-done { color: var(--green); }
     .phase-indicators .phase-pending { color: var(--text-muted); opacity: 0.5; }
 
@@ -429,14 +513,24 @@
   <script>
     // ── State ─────────────────────────────────────────────────
 
-    let pipeline = { phase: 'idle', controllers: [], controller: null, errors: [] };
-    let findingDecisions = {};  // { "finding_id": true|false } — true=approved (default)
-    let dismissedBlockers = {}; // { "finding_id": true }
-    let explanations = {};      // { "finding_id": "text" }
-    let askAnswer = null;       // single answer string
-    let loadingExplain = {};    // { "finding_id": true }
-    let loadingAsk = false;
-    let sourceViewOpen = false;
+    let pipeline = { phase: 'idle', controllers: [], workflows: {}, errors: [] };
+    let selectedController = null;  // name of controller shown in detail panel
+    let perController = {};         // per-controller client-side UI state
+    let loadingExplain = {};        // { "controller:finding_id": true }
+    let loadingAsk = {};            // { "controller": true }
+
+    function getCtrlState(name) {
+      if (!perController[name]) {
+        perController[name] = {
+          findingDecisions: {},
+          dismissedBlockers: {},
+          explanations: {},
+          askAnswer: null,
+          sourceViewOpen: false
+        };
+      }
+      return perController[name];
+    }
 
     // ── SSE Connection ────────────────────────────────────────
 
@@ -456,24 +550,23 @@
     async function shutdownServer() {
       if (!confirm('Shut down the server?')) return;
       await fetch('/shutdown', { method: 'POST' });
-      document.getElementById('app').innerHTML = '<h2 style="margin-top:2rem;color:var(--text-muted)">Server stopped.</h2>';
+      document.getElementById('app').innerHTML = '<h2 style="margin-top:2rem;color:var(--text-muted);text-align:center;">Server stopped.</h2>';
     }
 
     async function resetPipeline() {
-      findingDecisions = {};
-      dismissedBlockers = {};
-      explanations = {};
-      askAnswer = null;
-      sourceViewOpen = false;
+      selectedController = null;
+      perController = {};
+      loadingExplain = {};
+      loadingAsk = {};
       await fetch('/pipeline/reset', { method: 'POST' });
     }
 
-    function isFindingApproved(findingId) {
-      return findingDecisions[findingId] !== false; // default approved
+    function isFindingApproved(name, findingId) {
+      return getCtrlState(name).findingDecisions[findingId] !== false;
     }
 
-    function toggleFinding(findingId) {
-      findingDecisions[findingId] = !isFindingApproved(findingId);
+    function toggleFinding(name, findingId) {
+      getCtrlState(name).findingDecisions[findingId] = !isFindingApproved(name, findingId);
       render();
     }
 
@@ -481,30 +574,31 @@
       return finding.scope === 'module' || finding.scope === 'app';
     }
 
-    function dismissBlocker(findingId) {
-      dismissedBlockers[findingId] = true;
+    function dismissBlocker(name, findingId) {
+      getCtrlState(name).dismissedBlockers[findingId] = true;
       render();
     }
 
-    function undismissBlocker(findingId) {
-      delete dismissedBlockers[findingId];
+    function undismissBlocker(name, findingId) {
+      delete getCtrlState(name).dismissedBlockers[findingId];
       render();
     }
 
-    async function submitDecisions() {
-      const controller = pipeline.controller;
-      if (!controller || controller.status !== 'analyzed') return;
+    async function submitDecisions(name) {
+      const workflow = pipeline.workflows[name];
+      if (!workflow || workflow.status !== 'analyzed') return;
 
-      const findings = (controller.analysis?.findings || []).filter(f => !isBlocker(f));
-      const approved = findings.filter(f => isFindingApproved(f.id)).map(f => f.id);
+      const cs = getCtrlState(name);
+      const findings = (workflow.analysis?.findings || []).filter(f => !isBlocker(f));
+      const approved = findings.filter(f => isFindingApproved(name, f.id)).map(f => f.id);
 
       let decision;
       if (approved.length === 0) {
-        decision = { action: 'skip' };
+        decision = { controller: name, action: 'skip' };
       } else if (approved.length === findings.length) {
-        decision = { action: 'approve' };
+        decision = { controller: name, action: 'approve' };
       } else {
-        decision = { action: 'selective', approved_findings: approved };
+        decision = { controller: name, action: 'selective', approved_findings: approved };
       }
 
       await fetch('/decisions', {
@@ -514,54 +608,74 @@
       });
     }
 
-    async function explainFinding(findingId) {
-      loadingExplain[findingId] = true;
+    async function explainFinding(name, findingId) {
+      const key = `${name}:${findingId}`;
+      loadingExplain[key] = true;
       render();
 
-      const res = await fetch(`/explain/${findingId}`, { method: 'POST' });
+      const res = await fetch(`/explain/${findingId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ controller: name })
+      });
       const data = await res.json();
-      explanations[findingId] = data.explanation;
-      loadingExplain[findingId] = false;
+      getCtrlState(name).explanations[findingId] = data.explanation;
+      loadingExplain[key] = false;
       render();
     }
 
-    async function askQuestion() {
+    async function askQuestion(name) {
       const input = document.getElementById('ask-input');
       const question = input.value.trim();
       if (!question) return;
 
-      loadingAsk = true;
+      loadingAsk[name] = true;
       render();
 
       const res = await fetch('/ask', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question })
+        body: JSON.stringify({ controller: name, question })
       });
       const data = await res.json();
-      askAnswer = data.answer;
-      loadingAsk = false;
+      getCtrlState(name).askAnswer = data.answer;
+      loadingAsk[name] = false;
       render();
     }
 
-    async function retryAnalysis() {
-      await fetch('/pipeline/retry', { method: 'POST' });
+    async function retryAnalysis(name) {
+      await fetch('/pipeline/retry', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ controller: name })
+      });
     }
 
-    async function analyzeController(name) {
+    async function analyzeController(name, evt) {
+      if (evt) evt.stopPropagation();
       await fetch('/pipeline/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ controller: name })
       });
+      selectedController = name;
+      render();
     }
 
-    async function loadExistingAnalysis(name) {
+    async function loadExistingAnalysis(name, evt) {
+      if (evt) evt.stopPropagation();
       await fetch('/pipeline/load-analysis', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ controller: name })
       });
+      selectedController = name;
+      render();
+    }
+
+    function selectController(name) {
+      selectedController = name;
+      render();
     }
 
 
@@ -569,59 +683,249 @@
 
     function render() {
       const app = document.getElementById('app');
-      const controller = pipeline.controller;
       const phase = pipeline.phase;
-      const isDecisionPhase = phase === 'awaiting_decisions';
-      const isSelectionPhase = phase === 'awaiting_selection';
-      const isIdle = phase === 'idle' || phase === 'discovering';
+      const isDiscovering = phase === 'idle' || phase === 'discovering';
 
       app.innerHTML = `
         <header>
-          <h1>🛡 Harden Orchestrator</h1>
-          <span class="phase-badge phase-${phase}">${phase.replace(/_/g, ' ')}</span>
+          <div style="display:flex;align-items:center;gap:1rem;">
+            <h1>Harden Orchestrator</h1>
+            ${renderHeaderSummary()}
+          </div>
+          <div class="controls">
+            <button onclick="resetPipeline()">Reset</button>
+            <button onclick="shutdownServer()" style="color:var(--red);border-color:var(--red)">Shutdown</button>
+          </div>
         </header>
 
-        <div class="controls">
-          <button onclick="resetPipeline()">Reset</button>
-          <button onclick="shutdownServer()" style="margin-left:auto;color:var(--red);border-color:var(--red)">Shutdown</button>
+        <div class="layout">
+          <div class="sidebar">
+            ${isDiscovering
+              ? '<div style="padding:1rem;color:var(--text-muted);">Discovering controllers...</div>'
+              : renderSidebar()}
+          </div>
+          <div class="detail-panel">
+            ${renderDetailPanel()}
+          </div>
         </div>
+      `;
+    }
 
-        ${isIdle ? '<div style="color:var(--text-muted);margin-bottom:1rem;">Discovering controllers...</div>' : ''}
-        ${isSelectionPhase ? renderSelectionPanel() : ''}
+    function renderHeaderSummary() {
+      const workflows = pipeline.workflows || {};
+      const phases = Object.values(workflows).map(w => w.phase);
+      const counts = {};
+      phases.forEach(p => counts[p] = (counts[p] || 0) + 1);
 
-        <div class="controllers">
-          ${!isSelectionPhase && controller ? renderController(controller, isDecisionPhase) : ''}
+      const parts = [];
+      if (counts.analyzing)         parts.push(`<span class="count count-analyzing">${counts.analyzing} analyzing</span>`);
+      if (counts.hardening)         parts.push(`<span class="count count-analyzing">${counts.hardening} hardening</span>`);
+      if (counts.verifying)         parts.push(`<span class="count count-analyzing">${counts.verifying} verifying</span>`);
+      if (counts.awaiting_decisions) parts.push(`<span class="count count-awaiting">${counts.awaiting_decisions} awaiting decisions</span>`);
+      if (counts.complete)          parts.push(`<span class="count count-complete">${counts.complete} complete</span>`);
+      if (counts.errored)           parts.push(`<span class="count count-errored">${counts.errored} errored</span>`);
+
+      return parts.length ? `<div class="header-summary">${parts.join('')}</div>` : '';
+    }
+
+    function renderSidebar() {
+      const controllers = pipeline.controllers || [];
+      const grouped = {};
+      controllers.forEach(c => {
+        const mod = getModule(c.path) || '_root';
+        (grouped[mod] = grouped[mod] || []).push(c);
+      });
+      const sortedModules = Object.keys(grouped).sort((a, b) => {
+        if (a === '_root') return 1;
+        if (b === '_root') return -1;
+        return a.localeCompare(b);
+      });
+
+      return sortedModules.map(mod => `
+        <div class="sidebar-group-label">
+          ${mod === '_root' ? 'Application' : mod.replace(/\//g, '::')}
         </div>
+        ${grouped[mod].map(c => renderSidebarItem(c)).join('')}
+      `).join('');
+    }
 
-        ${isDecisionPhase && controller ? (() => {
-          const allFindings = controller.analysis?.findings || [];
-          const blockers = allFindings.filter(f => isBlocker(f));
-          const controllerFindings = allFindings.filter(f => !isBlocker(f));
-          const approvedCount = controllerFindings.filter(f => isFindingApproved(f.id)).length;
-          const undismissedCount = blockers.filter(f => !dismissedBlockers[f.id]).length;
-          const disabled = undismissedCount > 0 || approvedCount === 0;
-          return `
-            <div class="submit-bar">
-              <span class="decision-summary">
-                ${undismissedCount > 0 ? `${undismissedCount} blocker${undismissedCount !== 1 ? 's' : ''} remaining · ` : ''}${approvedCount} of ${controllerFindings.length} findings approved
-              </span>
-              <button class="primary" onclick="submitDecisions()"
-                ${disabled ? 'disabled' : ''}>
-                Harden (${approvedCount})
+    function renderSidebarItem(c) {
+      const workflow = (pipeline.workflows || {})[c.name];
+      const workflowPhase = workflow ? workflow.phase : 'none';
+      const isSelected = selectedController === c.name;
+      const displayName = c.name.replace(/_controller$/, '');
+
+      const riskBadge = c.overall_risk
+        ? `<span class="risk-badge risk-${c.overall_risk}">${c.overall_risk}</span>`
+        : '';
+
+      // Determine action buttons
+      let actions = '';
+      const isActive = workflow && ['analyzing', 'hardening', 'verifying'].includes(workflow.phase);
+
+      if (!isActive) {
+        if (c.existing_analysis_at) {
+          actions = `
+            <button class="primary" onclick="loadExistingAnalysis('${c.name}', event)">Use Existing</button>
+            <button onclick="analyzeController('${c.name}', event)">Re-analyze</button>
+          `;
+        } else {
+          actions = `<button class="primary" onclick="analyzeController('${c.name}', event)">Analyze</button>`;
+        }
+      }
+
+      return `
+        <div class="sidebar-item ${isSelected ? 'selected' : ''}" onclick="selectController('${c.name}')">
+          <div class="sidebar-item-header">
+            <span style="display:flex;align-items:center;gap:0.4rem;">
+              <span class="workflow-dot ${workflowPhase}"></span>
+              ${riskBadge}
+              <span class="sidebar-item-name">${displayName}</span>
+            </span>
+            ${renderFindingCounts(c.finding_counts)}
+          </div>
+          <div class="sidebar-item-meta">
+            ${renderPhaseIndicators(c.phases)}
+            ${c.stale === true ? '<span class="stale-warning">stale</span>' : ''}
+          </div>
+          ${actions ? `<div class="sidebar-item-actions">${actions}</div>` : ''}
+        </div>
+      `;
+    }
+
+    function renderDetailPanel() {
+      if (!selectedController) {
+        return '<div class="detail-empty">Select a controller from the sidebar</div>';
+      }
+
+      const workflow = (pipeline.workflows || {})[selectedController];
+      if (!workflow) {
+        const c = (pipeline.controllers || []).find(c => c.name === selectedController);
+        return `
+          <div class="detail-header">
+            <div>
+              <div class="detail-title">${selectedController.replace(/_controller$/, '')}</div>
+              ${c ? `<div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.3rem;">${c.path}</div>` : ''}
+            </div>
+          </div>
+          <div style="color:var(--text-muted);margin-top:1rem;">Click Analyze or Use Existing in the sidebar to start.</div>
+        `;
+      }
+
+      return renderWorkflowDetail(workflow);
+    }
+
+    function renderWorkflowDetail(workflow) {
+      const name = workflow.name;
+      const cs = getCtrlState(name);
+      const isDecisionPhase = workflow.phase === 'awaiting_decisions';
+      const allFindings = workflow.analysis?.findings || [];
+      const blockers = allFindings.filter(f => isBlocker(f));
+      const controllerFindings = allFindings.filter(f => !isBlocker(f));
+      const verification = workflow.verification;
+
+      // Prompt copy buttons
+      const promptButtons = [];
+      if (workflow.prompts?.analyze) promptButtons.push(`<button class="small" onclick="copyPrompt('${name}', 'analyze')">Copy Analysis Prompt</button>`);
+      if (workflow.prompts?.harden)  promptButtons.push(`<button class="small" onclick="copyPrompt('${name}', 'harden')">Copy Harden Prompt</button>`);
+      if (workflow.prompts?.verify)  promptButtons.push(`<button class="small" onclick="copyPrompt('${name}', 'verify')">Copy Verify Prompt</button>`);
+
+      let html = `
+        <div class="detail-header">
+          <div>
+            <div class="detail-title">${name.replace(/_controller$/, '')}</div>
+            <div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.3rem;">${workflow.path}</div>
+          </div>
+          <div class="detail-actions">
+            ${promptButtons.join('')}
+          </div>
+        </div>
+      `;
+
+      html += `
+        <div class="controller-card status-${workflow.status}">
+          <div class="controller-header">
+            <span>
+              <span class="status-dot"></span>
+              <span style="font-size:0.85rem;color:var(--text-muted);">${workflow.status}</span>
+            </span>
+            <span style="font-size: 0.8rem; color: var(--text-muted)">
+              ${workflow.analysis?.overall_risk ? `risk: <span class="severity-${workflow.analysis.overall_risk}">${workflow.analysis.overall_risk}</span>` : ''}
+            </span>
+          </div>
+
+          ${workflow.error ? `<div class="error-text">${escapeHtml(workflow.error)} <button onclick="retryAnalysis('${name}')">Retry</button></div>` : ''}
+
+          ${blockers.length ? `
+            <div style="margin-top: 0.8rem;">
+              <div style="font-size: 0.8rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Out-of-scope blockers</div>
+              <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+                ${blockers.map(f => renderBlocker(name, f, isDecisionPhase)).join('')}
+              </div>
+            </div>
+          ` : ''}
+
+          ${controllerFindings.length ? `
+            <div class="findings">
+              ${controllerFindings.map(f => renderFinding(name, f, isDecisionPhase)).join('')}
+            </div>
+          ` : ''}
+
+          ${workflow.analysis?.notes ? `<div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;">${escapeHtml(workflow.analysis.notes)}</div>` : ''}
+
+          ${['analyzed', 'hardened', 'verified'].includes(workflow.status) ? `
+            <div class="ask-section">
+              <input type="text" id="ask-input" placeholder="Ask a question about this controller..."
+                onkeydown="if(event.key==='Enter') askQuestion('${name}')" />
+              <button onclick="askQuestion('${name}')" ${loadingAsk[name] ? 'disabled' : ''}>
+                ${loadingAsk[name] ? '...' : 'Ask'}
               </button>
             </div>
-          `;
-        })() : ''}
+            ${cs.askAnswer ? `<div class="explanation-box">${renderMarkdown(cs.askAnswer)}</div>` : ''}
+          ` : ''}
 
-        ${pipeline.errors.length ? `
+          ${verification ? renderVerification(name, verification, workflow) : ''}
+
+          ${workflow.hardened?.warnings?.length ? `
+            <div style="margin-top: 0.5rem;">
+              ${workflow.hardened.warnings.map(w => `<div style="font-size: 0.8rem; color: var(--orange);">${escapeHtml(w)}</div>`).join('')}
+            </div>
+          ` : ''}
+        </div>
+      `;
+
+      // Submit bar for decision phase
+      if (isDecisionPhase) {
+        const approvedCount = controllerFindings.filter(f => isFindingApproved(name, f.id)).length;
+        const undismissedCount = blockers.filter(f => !cs.dismissedBlockers[f.id]).length;
+        const disabled = undismissedCount > 0 || approvedCount === 0;
+
+        html += `
+          <div class="submit-bar">
+            <span class="decision-summary">
+              ${undismissedCount > 0 ? `${undismissedCount} blocker${undismissedCount !== 1 ? 's' : ''} remaining · ` : ''}${approvedCount} of ${controllerFindings.length} findings approved
+            </span>
+            <button class="primary" onclick="submitDecisions('${name}')"
+              ${disabled ? 'disabled' : ''}>
+              Harden (${approvedCount})
+            </button>
+          </div>
+        `;
+      }
+
+      // Global errors
+      if (pipeline.errors.length) {
+        html += `
           <div style="margin-top: 1rem;">
             <h3 style="color: var(--red); margin-bottom: 0.5rem;">Errors</h3>
             ${pipeline.errors.map(e => `
-              <div class="error-text">${e.at}: ${e.message}</div>
+              <div class="error-text">${escapeHtml(e.at)}: ${escapeHtml(e.message)}</div>
             `).join('')}
           </div>
-        ` : ''}
-      `;
+        `;
+      }
+
+      return html;
     }
 
     function renderFindingCounts(counts) {
@@ -642,8 +946,8 @@
       ];
       return `<span class="phase-indicators">${items.map(i =>
         phases[i.key]
-          ? `<span class="phase-done">✓ ${i.label}</span>`
-          : `<span class="phase-pending">○ ${i.label}</span>`
+          ? `<span class="phase-done">${i.label}</span>`
+          : `<span class="phase-pending">${i.label}</span>`
       ).join('')}</span>`;
     }
 
@@ -652,84 +956,6 @@
       const ctrlIdx = parts.indexOf('controllers');
       if (ctrlIdx < 0 || ctrlIdx >= parts.length - 2) return null;
       return parts.slice(ctrlIdx + 1, parts.length - 1).join('/');
-    }
-
-    function renderSelectionPanel() {
-      const controllers = pipeline.controllers || [];
-      const grouped = {};
-      controllers.forEach(c => {
-        const mod = getModule(c.path) || '_root';
-        (grouped[mod] = grouped[mod] || []).push(c);
-      });
-      const sortedModules = Object.keys(grouped).sort((a, b) => {
-        if (a === '_root') return 1;
-        if (b === '_root') return -1;
-        return a.localeCompare(b);
-      });
-
-      return `
-        <div class="selection-panel">
-          <h3>Select a controller to harden</h3>
-          ${sortedModules.map(mod => `
-            <div style="margin-top:0.8rem;">
-              <div style="font-size:0.75rem; font-weight:600; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.4rem;">
-                ${mod === '_root' ? 'Application' : mod.replace(/\//g, '::')}
-              </div>
-              <div class="selection-list">
-                ${grouped[mod].map(c => renderSelectionItem(c)).join('')}
-              </div>
-            </div>
-          `).join('')}
-        </div>
-      `;
-    }
-
-    function renderSelectionItem(c) {
-      const displayName = c.name.replace(/_controller$/, '');
-
-      if (c.existing_analysis_at) {
-        const riskBadge = c.overall_risk
-          ? `<span class="risk-badge risk-${c.overall_risk}">${c.overall_risk}</span>`
-          : '';
-        const age = formatAge(c.existing_analysis_at);
-        const isStale = c.stale === true;
-
-        return `
-          <div class="selection-btn" style="cursor:default; flex-direction:column; align-items:stretch; gap:0.5rem;">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-              <span style="display:flex; align-items:center; gap:0.5rem;">
-                ${riskBadge}
-                <span class="ctrl-name">${displayName}</span>
-              </span>
-              <span class="ctrl-path">${c.path}</span>
-            </div>
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-              ${renderFindingCounts(c.finding_counts)}
-              ${renderPhaseIndicators(c.phases)}
-            </div>
-            <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">
-              ${isStale
-                ? '<span class="stale-warning">⚠ Analysis is stale</span>'
-                : `<span style="font-size:0.75rem; color:var(--text-muted);">analyzed ${age}</span>`}
-              <span style="display:flex; gap:0.4rem;">
-                <button class="primary" onclick="loadExistingAnalysis('${c.name}')" style="font-size:0.8rem; padding:0.3rem 0.7rem;">
-                  Use Existing
-                </button>
-                <button onclick="analyzeController('${c.name}')" style="font-size:0.8rem; padding:0.3rem 0.7rem;">
-                  Re-analyze
-                </button>
-              </span>
-            </div>
-          </div>
-        `;
-      }
-
-      return `
-        <button class="selection-btn" onclick="analyzeController('${c.name}')">
-          <span class="ctrl-name">${displayName}</span>
-          <span class="ctrl-path">${c.path}</span>
-        </button>
-      `;
     }
 
     function formatAge(isoDate) {
@@ -743,70 +969,10 @@
       return days + 'd ago';
     }
 
-    function renderController(controller, isDecisionPhase) {
-      const allFindings = controller.analysis?.findings || [];
-      const blockers = allFindings.filter(f => isBlocker(f));
-      const controllerFindings = allFindings.filter(f => !isBlocker(f));
-      const verification = controller.verification;
-
-      return `
-        <div class="controller-card status-${controller.status}">
-          <div class="controller-header">
-            <span>
-              <span class="status-dot"></span>
-              <span class="controller-name">${controller.name}</span>
-            </span>
-            <span style="font-size: 0.8rem; color: var(--text-muted)">
-              ${controller.status}
-              ${controller.analysis?.overall_risk ? ` · risk: <span class="severity-${controller.analysis.overall_risk}">${controller.analysis.overall_risk}</span>` : ''}
-            </span>
-          </div>
-
-          ${controller.path ? `<div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.5rem;">${controller.path}</div>` : ''}
-
-          ${controller.error ? `<div class="error-text">${controller.error} <button onclick="retryAnalysis()">Retry</button></div>` : ''}
-
-          ${blockers.length ? `
-            <div style="margin-top: 0.8rem;">
-              <div style="font-size: 0.8rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Out-of-scope blockers</div>
-              <div style="display: flex; flex-direction: column; gap: 0.5rem;">
-                ${blockers.map(f => renderBlocker(f, isDecisionPhase)).join('')}
-              </div>
-            </div>
-          ` : ''}
-
-          ${controllerFindings.length ? `
-            <div class="findings">
-              ${controllerFindings.map(f => renderFinding(f, isDecisionPhase)).join('')}
-            </div>
-          ` : ''}
-
-          ${controller.analysis?.notes ? `<div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;">${controller.analysis.notes}</div>` : ''}
-
-          ${controller.status === 'analyzed' || controller.status === 'hardened' || controller.status === 'verified' ? `
-            <div class="ask-section">
-              <input type="text" id="ask-input" placeholder="Ask a question about this controller..."
-                onkeydown="if(event.key==='Enter') askQuestion()" />
-              <button onclick="askQuestion()" ${loadingAsk ? 'disabled' : ''}>
-                ${loadingAsk ? '...' : 'Ask'}
-              </button>
-            </div>
-            ${askAnswer ? `<div class="explanation-box">${renderMarkdown(askAnswer)}</div>` : ''}
-          ` : ''}
-
-          ${verification ? renderVerification(verification) : ''}
-
-          ${controller.hardened?.warnings?.length ? `
-            <div style="margin-top: 0.5rem;">
-              ${controller.hardened.warnings.map(w => `<div style="font-size: 0.8rem; color: var(--orange);">⚠ ${w}</div>`).join('')}
-            </div>
-          ` : ''}
-        </div>
-      `;
-    }
-
-    function renderFinding(finding, isDecisionPhase) {
-      const approved = isFindingApproved(finding.id);
+    function renderFinding(name, finding, isDecisionPhase) {
+      const approved = isFindingApproved(name, finding.id);
+      const cs = getCtrlState(name);
+      const explainKey = `${name}:${finding.id}`;
       return `
         <div class="finding ${!approved ? 'is-skipped' : ''}">
           <div class="finding-info">
@@ -821,23 +987,25 @@
           <div class="finding-actions">
             ${isDecisionPhase ? `
               <button class="finding-toggle ${approved ? 'approved' : 'skipped'}"
-                onclick="toggleFinding('${finding.id}')"
+                onclick="toggleFinding('${name}', '${finding.id}')"
                 title="${approved ? 'Click to skip' : 'Click to approve'}">
-                ${approved ? '✓' : '✗'}
+                ${approved ? '&#10003;' : '&#10007;'}
               </button>
             ` : ''}
-            <button onclick="explainFinding('${finding.id}')"
-              ${loadingExplain[finding.id] ? 'disabled' : ''}>
-              ${loadingExplain[finding.id] ? '...' : 'Explain'}
+            <button onclick="explainFinding('${name}', '${finding.id}')"
+              ${loadingExplain[explainKey] ? 'disabled' : ''}>
+              ${loadingExplain[explainKey] ? '...' : 'Explain'}
             </button>
           </div>
         </div>
-        ${explanations[finding.id] ? `<div class="explanation-box">${renderMarkdown(explanations[finding.id])}</div>` : ''}
+        ${cs.explanations[finding.id] ? `<div class="explanation-box">${renderMarkdown(cs.explanations[finding.id])}</div>` : ''}
       `;
     }
 
-    function renderBlocker(finding, isDecisionPhase) {
-      const isDismissed = !!dismissedBlockers[finding.id];
+    function renderBlocker(name, finding, isDecisionPhase) {
+      const cs = getCtrlState(name);
+      const isDismissed = !!cs.dismissedBlockers[finding.id];
+      const explainKey = `${name}:${finding.id}`;
       return `
         <div class="blocker-card scope-${finding.scope} ${isDismissed ? 'dismissed' : ''}">
           <div class="blocker-header">
@@ -855,30 +1023,30 @@
             <div class="blocker-actions">
               ${isDecisionPhase ? `
                 ${isDismissed ? `
-                  <button onclick="undismissBlocker('${finding.id}')">Undo</button>
+                  <button onclick="undismissBlocker('${name}', '${finding.id}')">Undo</button>
                 ` : `
-                  <button onclick="dismissBlocker('${finding.id}')">Dismiss</button>
+                  <button onclick="dismissBlocker('${name}', '${finding.id}')">Dismiss</button>
                 `}
               ` : ''}
-              <button onclick="copyPlan('${finding.id}')"
+              <button onclick="copyPlan('${name}', '${finding.id}')"
                 title="Copy plan prompt to clipboard">Copy Plan</button>
-              <button onclick="explainFinding('${finding.id}')"
-                ${loadingExplain[finding.id] ? 'disabled' : ''}>
-                ${loadingExplain[finding.id] ? '...' : 'Explain'}
+              <button onclick="explainFinding('${name}', '${finding.id}')"
+                ${loadingExplain[explainKey] ? 'disabled' : ''}>
+                ${loadingExplain[explainKey] ? '...' : 'Explain'}
               </button>
             </div>
           </div>
-          ${explanations[finding.id] ? `<div class="explanation-box">${renderMarkdown(explanations[finding.id])}</div>` : ''}
+          ${cs.explanations[finding.id] ? `<div class="explanation-box">${renderMarkdown(cs.explanations[finding.id])}</div>` : ''}
         </div>
       `;
     }
 
 
-    function renderVerification(v) {
+    function renderVerification(name, v, workflow) {
+      const cs = getCtrlState(name);
       const rec = v.recommendation || 'review';
-      const controller = pipeline.controller;
       const findingsAddressed = v.findings_addressed || [];
-      const analysisFindings = controller?.analysis?.findings || [];
+      const analysisFindings = workflow.analysis?.findings || [];
       const addressedCount = findingsAddressed.filter(f => f.addressed).length;
 
       return `
@@ -889,7 +1057,7 @@
           ${v.new_issues?.length ? `<div style="margin-top: 0.3rem; color: var(--red); font-size: 0.8rem;">New issues found: ${v.new_issues.length}</div>` : ''}
         </div>
         ${findingsAddressed.length ? renderFindingsAddressed(findingsAddressed, analysisFindings) : ''}
-        ${controller?.hardened?.hardened_source ? renderSourceViewer(controller.hardened.hardened_source, controller.path) : ''}
+        ${workflow.hardened?.hardened_source ? renderSourceViewer(name, workflow.hardened.hardened_source, workflow.path) : ''}
       `;
     }
 
@@ -917,36 +1085,49 @@
       `;
     }
 
-    function renderSourceViewer(source, path) {
+    function renderSourceViewer(name, source, path) {
+      const cs = getCtrlState(name);
       return `
         <div class="source-viewer">
-          <div class="source-viewer-header" onclick="toggleSourceView()">
-            <span>${sourceViewOpen ? '▾' : '▸'} Hardened source</span>
+          <div class="source-viewer-header" onclick="toggleSourceView('${name}')">
+            <span>${cs.sourceViewOpen ? '&#9662;' : '&#9656;'} Hardened source</span>
             <span style="display:flex; gap:0.5rem; align-items:center;">
               <span style="font-size:0.75rem; color:var(--text-muted);">Written to ${escapeHtml(path)}</span>
-              <button onclick="event.stopPropagation(); copyHardenedSource()">Copy</button>
+              <button onclick="event.stopPropagation(); copyHardenedSource('${name}')">Copy</button>
             </span>
           </div>
-          ${sourceViewOpen ? `<pre><code>${escapeHtml(source)}</code></pre>` : ''}
+          ${cs.sourceViewOpen ? `<pre><code>${escapeHtml(source)}</code></pre>` : ''}
         </div>
       `;
     }
 
-    function toggleSourceView() {
-      sourceViewOpen = !sourceViewOpen;
+    function toggleSourceView(name) {
+      const cs = getCtrlState(name);
+      cs.sourceViewOpen = !cs.sourceViewOpen;
       render();
     }
 
-    function copyHardenedSource() {
-      const source = pipeline.controller?.hardened?.hardened_source;
+    function copyHardenedSource(name) {
+      const workflow = (pipeline.workflows || {})[name];
+      const source = workflow?.hardened?.hardened_source;
       if (!source) return;
       copyToClipboard(source).then(() => {
         showToast('Copied hardened source');
       }).catch(() => {
-        showToast('Failed to copy — check browser permissions');
+        showToast('Failed to copy');
       });
     }
 
+    function copyPrompt(name, phase) {
+      const workflow = (pipeline.workflows || {})[name];
+      const prompt = workflow?.prompts?.[phase];
+      if (!prompt) return;
+      copyToClipboard(prompt).then(() => {
+        showToast(`Copied ${phase} prompt`);
+      }).catch(() => {
+        showToast('Failed to copy');
+      });
+    }
 
     function escapeHtml(str) {
       if (typeof str !== 'string') str = JSON.stringify(str, null, 2);
@@ -962,19 +1143,18 @@
 
     // ── Plan Prompt Generation ─────────────────────────────
 
-    function getFinding(findingId) {
-      const controller = pipeline.controller;
-      return (controller?.analysis?.findings || []).find(f => f.id === findingId);
+    function getFinding(name, findingId) {
+      const workflow = (pipeline.workflows || {})[name];
+      return (workflow?.analysis?.findings || []).find(f => f.id === findingId);
     }
 
-    function buildPlan(findingId) {
-      const finding = getFinding(findingId);
-      const controller = pipeline.controller;
-      if (!finding || !controller) return '';
+    function buildPlan(name, findingId) {
+      const finding = getFinding(name, findingId);
+      const workflow = (pipeline.workflows || {})[name];
+      if (!finding || !workflow) return '';
 
       const scope = finding.scope;
-      const path = controller.path;
-      // Derive module dir from controller path: app/controllers/blog/posts_controller.rb → blog
+      const path = workflow.path;
       const parts = path.split('/');
       const nsIndex = parts.indexOf('controllers') + 1;
       const ns = nsIndex > 0 && nsIndex < parts.length - 1 ? parts[nsIndex] : null;
@@ -997,7 +1177,6 @@
         return `Read \`${path}\` and the related files in the \`${ns}\` namespace (\`app/models/${ns}/\`, \`app/views/${ns}/\`, \`app/controllers/${ns}/\`) to investigate this security finding:\n\n${issue}\n\n${planInstructions}`;
       }
 
-      // app scope (or module fallback if no namespace)
       return `Read \`${path}\` and investigate this security finding in the context of the full application — check routes, application controller, related models, and other controllers for similar patterns:\n\n${issue}\n\n${planInstructions}`;
     }
 
@@ -1005,7 +1184,6 @@
       if (navigator.clipboard && window.isSecureContext) {
         return navigator.clipboard.writeText(text);
       }
-      // Fallback for non-secure contexts (e.g. WSL2 IP access)
       const textarea = document.createElement('textarea');
       textarea.value = text;
       textarea.style.position = 'fixed';
@@ -1022,14 +1200,14 @@
       }
     }
 
-    function copyPlan(findingId) {
-      const text = buildPlan(findingId);
-      const finding = getFinding(findingId);
+    function copyPlan(name, findingId) {
+      const text = buildPlan(name, findingId);
+      const finding = getFinding(name, findingId);
       const scope = finding ? finding.scope : 'plan';
       copyToClipboard(text).then(() => {
         showToast(`Copied ${scope} plan prompt`);
       }).catch(() => {
-        showToast(`Failed to copy — check browser permissions`);
+        showToast(`Failed to copy`);
       });
     }
 
