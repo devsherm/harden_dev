@@ -1,1 +1,78 @@
-{"controller":"posts_controller","status":"analyzed","findings":[{"id":"finding_001","severity":"high","category":"authorization","scope":"app","action":null,"summary":"No authentication or authorization on any action","detail":"The controller has no authentication mechanism. All seven CRUD actions (index, show, new, edit, create, update, destroy) are publicly accessible. Any anonymous visitor can create, modify, and delete any post. This is the single largest security gap in the controller.","suggested_fix":"Add an authentication system (e.g. has_secure_password with a session-based login, Devise, or API token auth) and a before_action to require authentication on mutating actions (:new, :create, :edit, :update, :destroy). Consider whether index/show should also require auth."},{"id":"finding_002","severity":"high","category":"authorization","scope":"app","action":"update","summary":"No ownership check on update — any user can edit any post","detail":"Even once authentication is added, there is no scoping of the update action to the post's author. Any authenticated user could modify any other user's post by guessing or enumerating IDs.","suggested_fix":"After adding authentication, scope writes so that only the post's author (or an admin) can update. E.g. `@blog_post = current_user.blog_posts.find(params.expect(:id))` or a policy object."},{"id":"finding_003","severity":"high","category":"authorization","scope":"app","action":"destroy","summary":"No ownership check on destroy — any user can delete any post","detail":"Same issue as update: destroy is completely unguarded. An attacker can delete all posts by iterating over IDs.","suggested_fix":"Scope destroy to the authenticated user's own posts or require an admin role."},{"id":"finding_004","severity":"medium","category":"rate_limiting","scope":"controller","action":"update","summary":"No rate limit on update action","detail":"rate_limit is applied only to :create. A malicious actor could spam update requests to abuse server resources or rapidly mutate content. PUT/PATCH endpoints should also be rate-limited.","suggested_fix":"Extend rate_limit to cover :update, e.g. `rate_limit to: 5, within: 1.minute, only: [:create, :update]`."},{"id":"finding_005","severity":"medium","category":"rate_limiting","scope":"controller","action":"destroy","summary":"No rate limit on destroy action","detail":"Without rate limiting, an attacker can issue rapid DELETE requests to wipe out posts in bulk, especially dangerous given the lack of authentication.","suggested_fix":"Add rate_limit covering :destroy, e.g. `rate_limit to: 3, within: 1.minute, only: :destroy`."},{"id":"finding_006","severity":"medium","category":"other","scope":"controller","action":"index","summary":"Unbounded query — no pagination on index","detail":"Blog::Post.order(created_at: :desc) loads every post into memory. With a large number of records this becomes a denial-of-service vector: an attacker can trigger expensive full-table loads repeatedly. It also increases response size, which can be exploited for bandwidth exhaustion.","suggested_fix":"Add pagination (e.g. `.limit(25).offset(...)` or use a gem like pagy/kaminari) to cap the number of records returned per request."},{"id":"finding_007","severity":"low","category":"info_leak","scope":"controller","action":"create","summary":"JSON error responses expose model attribute names and validation details","detail":"On validation failure, `render json: @blog_post.errors` returns the full ActiveModel::Errors hash, revealing internal attribute names and all validation rules to the client. This applies to both create and update. While not critical, it gives attackers a map of the model schema.","suggested_fix":"Return a sanitized error response, e.g. `render json: { errors: @blog_post.errors.full_messages }` to expose human-readable messages without internal attribute keys, or use a serializer to control output."},{"id":"finding_008","severity":"low","category":"validation","scope":"module","action":"create","summary":"No server-side content length limits visible in controller","detail":"The strong params permit :title, :body, :topic, and :author with no length constraints at the controller level. If model validations don't enforce maximum lengths, an attacker can submit megabytes of text in the body field, consuming database storage and memory.","suggested_fix":"Ensure Blog::Post model has length validations (e.g. `validates :body, length: { maximum: 50_000 }`) for all text fields. This is a model-level fix but worth flagging here."},{"id":"finding_009","severity":"low","category":"other","scope":"controller","action":"destroy","summary":"destroy! raises on failure with no rescue — could leak exception details","detail":"Using destroy! instead of destroy means a failed deletion (e.g. due to a callback halt or DB constraint) raises ActiveRecord::RecordNotDestroyed. In production with default Rails config this is handled, but in development or with verbose error pages enabled it could leak internal details.","suggested_fix":"Consider using destroy (without bang) and handling the false return, or add a rescue block that returns a generic error message."}],"overall_risk":"high","notes":"The controller follows Rails 8 conventions well (params.expect, rate_limit on create, :see_other for redirects after mutation). The dominant risk is the complete absence of authentication and authorization — all mutating actions are fully public. CSRF protection is handled by Rails defaults (ApplicationController inherits protect_from_forgery). Once auth is added, ownership scoping and expanded rate limiting should follow."}
+{
+  "controller": "posts_controller",
+  "status": "analyzed",
+  "findings": [
+    {
+      "id": "finding_001",
+      "severity": "high",
+      "category": "authorization",
+      "scope": "module",
+      "action": null,
+      "summary": "Owner authorization compares by display name instead of user ID",
+      "detail": "authorize_post_owner! checks @blog_post.author == current_user.name, comparing string display names. If two users share the same name, either can mutate the other's posts. If a user changes their display name, they lose ownership of all prior posts. The create action also stores current_user.name as the author, compounding the issue.",
+      "suggested_fix": "Add a user_id foreign key to blog_posts. Set @blog_post.user_id = current_user.id in create. Compare @blog_post.user_id == current_user.id in authorize_post_owner!. Keep the author name column for display purposes only."
+    },
+    {
+      "id": "finding_002",
+      "severity": "medium",
+      "category": "validation",
+      "scope": "controller",
+      "action": "index",
+      "summary": "Unbounded pagination offset enables database denial of service",
+      "detail": "pagination_offset has no upper bound. A request to ?page=999999999 generates OFFSET 24999999975, forcing SQLite to scan and discard that many rows before returning results. This is a cheap way for an attacker to saturate database I/O.",
+      "suggested_fix": "Cap the page parameter to a reasonable maximum (e.g., page = [[params[:page].to_i, 0].max, 100].min) or switch to cursor-based pagination. Also consider adding a total-count guard so pages beyond the last return empty results immediately."
+    },
+    {
+      "id": "finding_003",
+      "severity": "medium",
+      "category": "validation",
+      "scope": "module",
+      "action": "create",
+      "summary": "No visible length validation on user-submitted text fields",
+      "detail": "The strong params permit title, body, and topic with no length constraints visible at the controller level. If the Blog::Post model also lacks length validations, an attacker could submit multi-megabyte payloads that consume storage and slow down rendering. Even with model validations, extremely large payloads are parsed and allocated in memory before validation runs.",
+      "suggested_fix": "Add model-level validates :title, length: { maximum: 255 }; validates :body, length: { maximum: 50_000 }; validates :topic, length: { maximum: 100 } (adjust limits to your needs). For defense in depth, consider Rack middleware or Rails config to cap request body size (e.g., Rack::Protection::MaximumBodyLength or nginx client_max_body_size)."
+    },
+    {
+      "id": "finding_004",
+      "severity": "low",
+      "category": "authorization",
+      "scope": "controller",
+      "action": null,
+      "summary": "authorize_post_owner! does not explicitly halt the filter chain",
+      "detail": "The before_action relies on Rails' implicit performed? check to halt execution after redirect_to/render. While this works correctly in current Rails, it is a fragile pattern — a future refactor (e.g., extracting the check into a service object or adding error logging after the respond_to block) could inadvertently allow the action to proceed for unauthorized users.",
+      "suggested_fix": "Add an explicit return or use throw(:abort) after the respond_to block, or restructure as: redirect_to(...) and return unless @blog_post.author == current_user.name. Alternatively, raise a custom ForbiddenError and handle it in a rescue_from at the ApplicationController level."
+    },
+    {
+      "id": "finding_005",
+      "severity": "low",
+      "category": "rate_limiting",
+      "scope": "controller",
+      "action": "index",
+      "summary": "No rate limiting on read endpoints",
+      "detail": "The index and show actions have no rate limits. Combined with the unbounded pagination in index, an attacker can rapidly enumerate all posts or generate expensive database queries. Show is lower risk but still allows rapid content scraping.",
+      "suggested_fix": "Add a higher rate limit for read actions, e.g., rate_limit to: 60, within: 1.minute, only: %i[index show]. This still allows normal browsing while limiting automated scraping and offset-based DoS."
+    },
+    {
+      "id": "finding_006",
+      "severity": "low",
+      "category": "other",
+      "scope": "controller",
+      "action": "index",
+      "summary": "Index query may cause N+1 if view accesses associations",
+      "detail": "Blog::Post.order(...).limit(25) does not eager-load any associations. If the index view renders comment counts, author details, or other associated data, each post triggers a separate query. While primarily a performance issue, N+1 queries under load amplify the impact of scraping or DoS attacks.",
+      "suggested_fix": "If the index view accesses comments, add .includes(:comments) or use a counter_cache on the association. Profile with bullet gem or query logs to confirm."
+    },
+    {
+      "id": "finding_007",
+      "severity": "low",
+      "category": "other",
+      "scope": "controller",
+      "action": "show",
+      "summary": "Show action does not eager-load comments for display",
+      "detail": "The show action sets @blog_comment = Blog::Comment.new but does not load existing comments. If the show view lists comments (likely for a blog post), they will be lazy-loaded, causing an N+1 if the view iterates comment authors or nested data.",
+      "suggested_fix": "Add @blog_post.comments.includes(:any_nested_association) or preload comments in set_blog_post for the show action. Consider scoping to .order(created_at: :asc).limit(100) to prevent unbounded comment loading."
+    }
+  ],
+  "overall_risk": "medium",
+  "notes": "This controller is well-structured with authentication, owner authorization, rate limiting on mutations, Rails 8 params.expect(), and server-side author assignment. The critical gap is name-based ownership (finding_001) — this is an architectural issue requiring a schema migration to add user_id. The unbounded pagination (finding_002) is the most immediately exploitable issue and is a simple fix. The remaining findings are defense-in-depth improvements. CSRF protection is handled by Rails defaults and is not a concern here. Redirect targets are all internal paths — no open redirect risk. Error messages are appropriately generic and do not leak internal state."
+}
