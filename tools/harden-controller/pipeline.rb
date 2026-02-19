@@ -728,6 +728,11 @@ class Pipeline
       @prompt_store.clear
       @queries.clear
     end
+    # Second drain: catch threads that snuck in between shutdown and the
+    # mutex block above (race window where safe_thread could still append).
+    stragglers = @mutex.synchronize { @threads.dup }
+    stragglers.each { |t| t.kill if t.alive? }
+    stragglers.each { |t| t.join(2) }
   end
 
   # ── Helpers ─────────────────────────────────────────────────
@@ -816,6 +821,7 @@ class Pipeline
       Process.kill("-KILL", pid) rescue Errno::ESRCH
       Process.wait2(pid) rescue nil
     end
+    wr&.close unless wr&.closed?
     rd&.close unless rd&.closed?
     reader&.join(2)
   end
@@ -867,7 +873,10 @@ class Pipeline
       end
       t
     end
-    ci_threads.map(&:value)
+    results = ci_threads.map { |t| t.value rescue $! }
+    first_error = results.find { |r| r.is_a?(Exception) }
+    raise first_error if first_error
+    results
   end
 
   def derive_test_path(controller_path)

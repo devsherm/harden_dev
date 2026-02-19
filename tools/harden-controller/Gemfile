@@ -3,3 +3,8 @@ source "https://rubygems.org"
 gem "sinatra"
 gem "sinatra-contrib"  # for streaming support
 gem "puma"
+
+group :test do
+  gem "minitest"
+  gem "rake"
+end
