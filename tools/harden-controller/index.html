@@ -174,6 +174,10 @@
     .workflow-dot.fixing_tests { background: #f472b6; animation: pulse 1s infinite; }
     .workflow-dot.tested { background: #22d3ee; }
     .workflow-dot.tests_failed { background: var(--red); }
+    .workflow-dot.ci_checking { background: #2dd4bf; animation: pulse 1s infinite; }
+    .workflow-dot.fixing_ci { background: #c084fc; animation: pulse 1s infinite; }
+    .workflow-dot.ci_passed { background: #2dd4bf; }
+    .workflow-dot.ci_failed { background: var(--red); }
     .workflow-dot.verifying { background: #818cf8; animation: pulse 1s infinite; }
     .workflow-dot.complete { background: var(--green); }
     .workflow-dot.skipped { background: var(--text-muted); }
@@ -258,6 +262,10 @@
     .status-fixing_tests .status-dot { background: #f472b6; animation: pulse 1s infinite; }
     .status-tested .status-dot { background: #22d3ee; }
     .status-tests_failed .status-dot { background: var(--red); }
+    .status-ci_checking .status-dot { background: #2dd4bf; animation: pulse 1s infinite; }
+    .status-fixing_ci .status-dot { background: #c084fc; animation: pulse 1s infinite; }
+    .status-ci_passed .status-dot { background: #2dd4bf; }
+    .status-ci_failed .status-dot { background: var(--red); }
     .status-verifying .status-dot { background: #818cf8; animation: pulse 1s infinite; }
     .status-verified .status-dot { background: var(--green); }
     .status-skipped .status-dot { background: var(--text-muted); }
@@ -668,6 +676,14 @@
       });
     }
 
+    async function retryCi(name) {
+      await fetch('/pipeline/retry-ci', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ controller: name })
+      });
+    }
+
     async function retryAnalysis(name) {
       await fetch('/pipeline/retry', {
         method: 'POST',
@@ -747,9 +763,12 @@
       if (counts.hardening)         parts.push(`<span class="count count-analyzing">${counts.hardening} hardening</span>`);
       if (counts.testing)           parts.push(`<span class="count count-analyzing">${counts.testing} testing</span>`);
       if (counts.fixing_tests)      parts.push(`<span class="count count-analyzing">${counts.fixing_tests} fixing tests</span>`);
+      if (counts.ci_checking)       parts.push(`<span class="count count-analyzing">${counts.ci_checking} CI checking</span>`);
+      if (counts.fixing_ci)         parts.push(`<span class="count count-analyzing">${counts.fixing_ci} fixing CI</span>`);
       if (counts.verifying)         parts.push(`<span class="count count-analyzing">${counts.verifying} verifying</span>`);
       if (counts.awaiting_decisions) parts.push(`<span class="count count-awaiting">${counts.awaiting_decisions} awaiting decisions</span>`);
       if (counts.tests_failed)      parts.push(`<span class="count count-errored">${counts.tests_failed} tests failed</span>`);
+      if (counts.ci_failed)         parts.push(`<span class="count count-errored">${counts.ci_failed} CI failed</span>`);
       if (counts.complete)          parts.push(`<span class="count count-complete">${counts.complete} complete</span>`);
       if (counts.errored)           parts.push(`<span class="count count-errored">${counts.errored} errored</span>`);
 
@@ -789,7 +808,7 @@
 
       // Determine action buttons
       let actions = '';
-      const isActive = workflow && ['analyzing', 'hardening', 'testing', 'fixing_tests', 'verifying'].includes(workflow.phase);
+      const isActive = workflow && ['analyzing', 'hardening', 'testing', 'fixing_tests', 'ci_checking', 'fixing_ci', 'verifying'].includes(workflow.phase);
 
       if (!isActive) {
         if (c.existing_analysis_at) {
@@ -857,6 +876,7 @@
       if (workflow.prompts?.analyze)   promptButtons.push(`<button class="small" onclick="copyPrompt('${name}', 'analyze')">Copy Analysis Prompt</button>`);
       if (workflow.prompts?.harden)    promptButtons.push(`<button class="small" onclick="copyPrompt('${name}', 'harden')">Copy Harden Prompt</button>`);
       if (workflow.prompts?.fix_tests) promptButtons.push(`<button class="small" onclick="copyPrompt('${name}', 'fix_tests')">Copy Fix Tests Prompt</button>`);
+      if (workflow.prompts?.fix_ci)    promptButtons.push(`<button class="small" onclick="copyPrompt('${name}', 'fix_ci')">Copy Fix CI Prompt</button>`);
       if (workflow.prompts?.verify)    promptButtons.push(`<button class="small" onclick="copyPrompt('${name}', 'verify')">Copy Verify Prompt</button>`);
 
       let html = `
@@ -902,7 +922,7 @@
 
           ${workflow.analysis?.notes ? `<div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;">${escapeHtml(workflow.analysis.notes)}</div>` : ''}
 
-          ${['analyzed', 'hardened', 'tested', 'tests_failed', 'verified'].includes(workflow.status) ? `
+          ${['analyzed', 'hardened', 'tested', 'tests_failed', 'ci_passed', 'ci_failed', 'verified'].includes(workflow.status) ? `
             <div class="ask-section">
               <input type="text" id="ask-input" placeholder="Ask a question about this controller..."
                 onkeydown="if(event.key==='Enter') askQuestion('${name}')" />
@@ -918,6 +938,14 @@
           ${workflow.status === 'tests_failed' ? `
             <div style="margin-top: 0.5rem;">
               <button class="primary" onclick="retryTests('${name}')">Retry Tests</button>
+            </div>
+          ` : ''}
+
+          ${workflow.ci_results ? renderCIResults(name, workflow.ci_results) : ''}
+
+          ${workflow.status === 'ci_failed' ? `
+            <div style="margin-top: 0.5rem;">
+              <button class="primary" onclick="retryCi('${name}')">Retry CI</button>
             </div>
           ` : ''}
 
@@ -980,6 +1008,7 @@
         { key: 'analyzed',  label: 'analyzed' },
         { key: 'hardened',  label: 'hardened' },
         { key: 'tested',    label: 'tested' },
+        { key: 'ci_checked', label: 'ci' },
         { key: 'verified',  label: 'verified' },
       ];
       return `<span class="phase-indicators">${items.map(i =>
@@ -1113,6 +1142,67 @@
       const cs = getCtrlState(name);
       if (!cs.testAttemptOpen) cs.testAttemptOpen = {};
       cs.testAttemptOpen[index] = !cs.testAttemptOpen[index];
+      render();
+    }
+
+    function renderCIResults(name, results) {
+      const passed = results.passed;
+      const checks = results.checks || [];
+      const fixAttempts = results.fix_attempts || [];
+      const cs = getCtrlState(name);
+      if (!cs.ciCheckOpen) cs.ciCheckOpen = {};
+      if (!cs.ciFixOpen) cs.ciFixOpen = {};
+
+      let html = `
+        <div class="test-results">
+          <div style="display:flex; align-items:center; gap:0.6rem; margin-bottom:0.4rem;">
+            <span style="font-size:0.8rem; font-weight:600; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.05em;">CI Results</span>
+            <span class="test-badge ${passed ? 'pass' : 'fail'}">${passed ? 'PASS' : 'FAIL'}</span>
+          </div>
+          ${checks.map((c, i) => `
+            <div class="test-attempt">
+              <div class="test-attempt-header" onclick="toggleCiCheck('${name}', ${i})">
+                <span>
+                  <span class="test-badge ${c.passed ? 'pass' : 'fail'}" style="font-size:0.65rem;">${c.passed ? 'PASS' : 'FAIL'}</span>
+                  ${escapeHtml(c.name)} <span style="color:var(--text-muted); font-size:0.75rem;">${escapeHtml(c.command)}</span>
+                </span>
+                <span>${cs.ciCheckOpen[i] ? '&#9662;' : '&#9656;'}</span>
+              </div>
+              ${cs.ciCheckOpen[i] ? `<pre><code>${escapeHtml(c.output)}</code></pre>` : ''}
+            </div>
+          `).join('')}
+      `;
+
+      if (fixAttempts.length) {
+        html += `
+          <div style="margin-top:0.5rem; font-size:0.8rem; font-weight:600; color:var(--text-muted);">Fix Attempts (${fixAttempts.length})</div>
+          ${fixAttempts.map((fa, i) => `
+            <div class="test-attempt">
+              <div class="test-attempt-header" onclick="toggleCiFix('${name}', ${i})">
+                <span>Attempt ${fa.attempt}${fa.fixes_applied ? ` (${fa.fixes_applied.length} fix${fa.fixes_applied.length !== 1 ? 'es' : ''})` : ''}</span>
+                <span>${cs.ciFixOpen[i] ? '&#9662;' : '&#9656;'}</span>
+              </div>
+              ${cs.ciFixOpen[i] ? `<pre><code>${escapeHtml(JSON.stringify({ fixes_applied: fa.fixes_applied, unfixable_issues: fa.unfixable_issues }, null, 2))}</code></pre>` : ''}
+            </div>
+          `).join('')}
+        `;
+      }
+
+      html += '</div>';
+      return html;
+    }
+
+    function toggleCiCheck(name, index) {
+      const cs = getCtrlState(name);
+      if (!cs.ciCheckOpen) cs.ciCheckOpen = {};
+      cs.ciCheckOpen[index] = !cs.ciCheckOpen[index];
+      render();
+    }
+
+    function toggleCiFix(name, index) {
+      const cs = getCtrlState(name);
+      if (!cs.ciFixOpen) cs.ciFixOpen = {};
+      cs.ciFixOpen[index] = !cs.ciFixOpen[index];
       render();
     }
 

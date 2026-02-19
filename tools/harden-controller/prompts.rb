@@ -144,6 +144,62 @@ module Prompts
     PROMPT
   end
 
+  # Phase 3.75: Fix CI failures after hardening
+  def self.fix_ci(controller_name, hardened_source, ci_output, analysis_json)
+    <<~PROMPT
+      You are a Rails security hardening specialist. The hardened controller below causes CI check failures.
+      Fix the controller so CI checks pass while preserving as many hardening changes as possible.
+
+      ## Controller: #{controller_name}
+
+      ### Hardened Source (current)
+      ```ruby
+      #{hardened_source}
+      ```
+
+      ### CI Check Output
+      ```
+      #{ci_output}
+      ```
+
+      ### Original Analysis
+      ```json
+      #{analysis_json}
+      ```
+
+      ## Your Task
+
+      1. Read the CI check failures carefully
+      2. Fix RuboCop and Brakeman issues in the controller code
+      3. Note that bundler-audit and importmap-audit failures are NOT fixable from controller code — list them as unfixable
+      4. Preserve as many security hardening changes as possible — only revert what is necessary to fix CI
+
+      ## Output Format
+
+      Respond with ONLY this JSON (no markdown fences, no preamble):
+
+      {
+        "controller": "#{controller_name}",
+        "status": "fixed",
+        "hardened_source": "THE COMPLETE FIXED CONTROLLER SOURCE CODE",
+        "fixes_applied": [
+          {
+            "description": "What was changed to fix the CI failure",
+            "check": "rubocop|brakeman",
+            "hardening_preserved": true,
+            "notes": "Any relevant context"
+          }
+        ],
+        "unfixable_issues": [
+          {
+            "check": "bundler-audit|importmap-audit",
+            "description": "Why this cannot be fixed from controller code"
+          }
+        ]
+      }
+    PROMPT
+  end
+
   # Phase 4: Verify hardening was applied correctly
   def self.verify(controller_name, original_source, hardened_source, analysis_json)
     <<~PROMPT

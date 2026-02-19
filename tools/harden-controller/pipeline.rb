@@ -3,7 +3,7 @@ require "fileutils"
 require_relative "prompts"
 
 class Pipeline
-  ACTIVE_PHASES = %w[analyzing hardening testing fixing_tests verifying].freeze
+  ACTIVE_PHASES = %w[analyzing hardening testing fixing_tests ci_checking fixing_ci verifying].freeze
 
   attr_reader :state
 
@@ -44,11 +44,13 @@ class Pipeline
       analysis_file = sidecar_path(path, "analysis.json")
       hardened_file = sidecar_path(path, "hardened.json")
       test_results_file = sidecar_path(path, "test_results.json")
+      ci_results_file = sidecar_path(path, "ci_results.json")
       verified_file = sidecar_path(path, "verification.json")
 
       has_analysis = File.exist?(analysis_file)
       has_hardened = File.exist?(hardened_file)
       has_tested = File.exist?(test_results_file)
+      has_ci = File.exist?(ci_results_file)
       has_verified = File.exist?(verified_file)
 
       overall_risk = nil
@@ -69,10 +71,11 @@ class Pipeline
         name: basename,
         path: relative,
         full_path: path,
-        phases: { analyzed: has_analysis, hardened: has_hardened, tested: has_tested, verified: has_verified },
+        phases: { analyzed: has_analysis, hardened: has_hardened, tested: has_tested, ci_checked: has_ci, verified: has_verified },
         existing_analysis_at: has_analysis ? File.mtime(analysis_file).iso8601 : nil,
         existing_hardened_at: has_hardened ? File.mtime(hardened_file).iso8601 : nil,
         existing_tested_at: has_tested ? File.mtime(test_results_file).iso8601 : nil,
+        existing_ci_at: has_ci ? File.mtime(ci_results_file).iso8601 : nil,
         existing_verified_at: has_verified ? File.mtime(verified_file).iso8601 : nil,
         stale: has_analysis ? controller_mtime > File.mtime(analysis_file) : nil,
         overall_risk: overall_risk,
@@ -223,6 +226,7 @@ class Pipeline
   # ── Phase 3.5: Testing ─────────────────────────────────────
 
   MAX_FIX_ATTEMPTS = 2
+  MAX_CI_FIX_ATTEMPTS = 2
 
   def run_testing(name)
     workflow = nil
@@ -322,7 +326,7 @@ class Pipeline
       return
     end
 
-    run_verification(name)
+    run_ci_checks(name)
   end
 
   def retry_tests(name)
@@ -336,13 +340,125 @@ class Pipeline
     run_testing(name)
   end
 
+  # ── Phase 3.75: CI Checking ──────────────────────────────
+
+  CI_CHECKS = [
+    { name: "rubocop", cmd: ->(path) { "bin/rubocop #{path}" } },
+    { name: "brakeman", cmd: ->(_) { "bin/brakeman --quiet --no-pager --exit-on-warn --exit-on-error" } },
+    { name: "bundler-audit", cmd: ->(_) { "bin/bundler-audit" } },
+    { name: "importmap-audit", cmd: ->(_) { "bin/importmap audit" } }
+  ].freeze
+
+  def run_ci_checks(name)
+    workflow = nil
+    @mutex.synchronize do
+      workflow = @state[:workflows][name]
+      return unless workflow[:status] == "tested"
+      workflow[:phase] = "ci_checking"
+      workflow[:status] = "ci_checking"
+    end
+
+    begin
+      require "open3"
+      controller_relative = workflow[:path]
+      fix_attempts = []
+      checks = run_all_ci_checks(controller_relative)
+      passed = checks.all? { |c| c[:passed] }
+
+      unless passed
+        MAX_CI_FIX_ATTEMPTS.times do |i|
+          @mutex.synchronize do
+            workflow[:phase] = "fixing_ci"
+            workflow[:status] = "fixing_ci"
+          end
+
+          failed_output = checks.reject { |c| c[:passed] }.map { |c|
+            "== #{c[:name]} (#{c[:command]}) ==\n#{c[:output]}"
+          }.join("\n\n")
+
+          hardened_source = File.read(workflow[:full_path])
+          analysis_json = workflow[:analysis].to_json
+          prompt = Prompts.fix_ci(workflow[:name], hardened_source, failed_output, analysis_json)
+
+          fix_result = claude_call(prompt)
+          parsed = parse_json_response(fix_result)
+
+          @mutex.synchronize do
+            workflow[:prompts][:fix_ci] = prompt
+          end
+
+          if parsed["hardened_source"]
+            File.write(workflow[:full_path], parsed["hardened_source"])
+          end
+
+          fix_attempts << {
+            attempt: i + 1,
+            fixes_applied: parsed["fixes_applied"],
+            unfixable_issues: parsed["unfixable_issues"]
+          }
+
+          @mutex.synchronize do
+            workflow[:phase] = "ci_checking"
+            workflow[:status] = "ci_checking"
+          end
+
+          checks = run_all_ci_checks(controller_relative)
+          passed = checks.all? { |c| c[:passed] }
+          break if passed
+        end
+      end
+
+      ci_results = {
+        controller: name,
+        passed: passed,
+        checks: checks,
+        fix_attempts: fix_attempts
+      }
+      write_sidecar(workflow[:full_path], "ci_results.json", JSON.pretty_generate(ci_results))
+
+      @mutex.synchronize do
+        workflow[:ci_results] = ci_results
+        if passed
+          workflow[:status] = "ci_passed"
+          workflow[:phase] = "ci_passed"
+        else
+          workflow[:status] = "ci_failed"
+          workflow[:phase] = "ci_failed"
+          add_error("CI checks still failing for #{name} after #{fix_attempts.length} fix attempt(s)")
+          return
+        end
+      end
+    rescue => e
+      @mutex.synchronize do
+        workflow[:error] = e.message
+        workflow[:status] = "error"
+        workflow[:phase] = "errored"
+        add_error("CI checking failed for #{name}: #{e.message}")
+      end
+      return
+    end
+
+    run_verification(name)
+  end
+
+  def retry_ci(name)
+    @mutex.synchronize do
+      workflow = @state[:workflows][name]
+      raise "No workflow for #{name}" unless workflow
+      raise "#{name} is not in ci_failed state" unless workflow[:status] == "ci_failed"
+      workflow[:status] = "tested"
+      workflow[:error] = nil
+    end
+    run_ci_checks(name)
+  end
+
   # ── Phase 4: Verification ─────────────────────────────────
 
   def run_verification(name)
     workflow = nil
     @mutex.synchronize do
       workflow = @state[:workflows][name]
-      return unless workflow[:status] == "tested"
+      return unless workflow[:status] == "ci_passed"
       workflow[:phase] = "verifying"
       workflow[:status] = "verifying"
     end
@@ -435,12 +551,13 @@ class Pipeline
       decision: nil,
       hardened: nil,
       test_results: nil,
+      ci_results: nil,
       verification: nil,
       error: nil,
       started_at: nil,
       completed_at: nil,
       original_source: nil,
-      prompts: { analyze: nil, harden: nil, fix_tests: nil, verify: nil }
+      prompts: { analyze: nil, harden: nil, fix_tests: nil, fix_ci: nil, verify: nil }
     }
   end
 
@@ -470,6 +587,15 @@ class Pipeline
 
   def add_error(msg)
     @state[:errors] << { message: msg, at: Time.now.iso8601 }
+  end
+
+  def run_all_ci_checks(controller_relative)
+    require "open3"
+    CI_CHECKS.map do |check|
+      cmd = check[:cmd].call(controller_relative)
+      output, status = Open3.capture2e(cmd, chdir: @rails_root)
+      { name: check[:name], command: cmd, passed: status.success?, output: output }
+    end
   end
 
   def derive_test_path(controller_path)
