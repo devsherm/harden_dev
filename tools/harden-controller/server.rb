@@ -2,6 +2,7 @@ require "sinatra"
 require "sinatra/streaming"
 require "json"
 require "socket"
+require "securerandom"
 require_relative "pipeline"
 
 # ── Configuration ────────────────────────────────────────────
@@ -18,6 +19,13 @@ set :bind, "0.0.0.0"
 set :server, :puma
 set :server_settings, { force_shutdown_after: 3 }
 set :run, false
+
+enable :sessions
+set :session_secret, ENV.fetch("SESSION_SECRET") { SecureRandom.hex(64) }
+# Host auth is handled by passcode; allow any host (ngrok, LAN, rack-test)
+set :host_authorization, permitted_hosts: []
+
+HARDEN_PASSCODE = ENV["HARDEN_PASSCODE"]
 
 # Rails root defaults to current directory (run from within your Rails project)
 RAILS_ROOT = ENV.fetch("RAILS_ROOT", ".")
@@ -43,6 +51,20 @@ before do
   headers "Access-Control-Allow-Origin" => "*",
           "Access-Control-Allow-Methods" => "GET, POST, OPTIONS",
           "Access-Control-Allow-Headers" => "Content-Type"
+
+  # ── Passcode auth gate ──────────────────────────────────
+  next if HARDEN_PASSCODE.nil?                         # no passcode configured → open
+  next if request.path_info == "/auth" && request.post? # login endpoint
+  next if request.options?                              # CORS preflight
+
+  unless session[:authenticated]
+    if request.path_info == "/" && request.get?
+      halt 200, { "Content-Type" => "text/html" }, login_page
+    else
+      halt 401, { "Content-Type" => "application/json" },
+           { error: "Unauthorized" }.to_json
+    end
+  end
 end
 
 options "*" do
@@ -58,6 +80,75 @@ helpers do
     halt 400, { "Content-Type" => "application/json" },
          { error: "Invalid JSON: #{e.message}" }.to_json
   end
+
+  def login_page
+    <<~HTML
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Harden Orchestrator — Login</title>
+        <style>
+          * { box-sizing: border-box; margin: 0; padding: 0; }
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+            background: #0f1117; color: #e1e4ed;
+            display: flex; align-items: center; justify-content: center;
+            height: 100vh;
+          }
+          .login-box {
+            background: #1a1d27; border: 1px solid #2a2e3b; border-radius: 8px;
+            padding: 2rem; width: 320px; text-align: center;
+          }
+          h1 { font-size: 1.2rem; margin-bottom: 1.5rem; }
+          input {
+            width: 100%; padding: 0.6rem 0.8rem; margin-bottom: 1rem;
+            background: #0f1117; border: 1px solid #2a2e3b; border-radius: 4px;
+            color: #e1e4ed; font-size: 0.9rem;
+          }
+          input:focus { outline: none; border-color: #6c8cff; }
+          button {
+            width: 100%; padding: 0.6rem; background: #2563eb; border: none;
+            border-radius: 4px; color: #e1e4ed; font-size: 0.9rem; cursor: pointer;
+          }
+          button:hover { background: #1d4ed8; }
+          .error { color: #f87171; font-size: 0.85rem; margin-bottom: 1rem; }
+        </style>
+      </head>
+      <body>
+        <div class="login-box">
+          <h1>Harden Orchestrator</h1>
+          <form method="POST" action="/auth">
+            <input type="password" name="passcode" placeholder="Passcode" autofocus required />
+            <button type="submit">Login</button>
+          </form>
+        </div>
+      </body>
+      </html>
+    HTML
+  end
+end
+
+# ── Authentication ───────────────────────────────────────────
+
+post "/auth" do
+  if HARDEN_PASSCODE && Rack::Utils.secure_compare(params["passcode"].to_s, HARDEN_PASSCODE)
+    session[:authenticated] = true
+    redirect "/"
+  elsif HARDEN_PASSCODE.nil?
+    redirect "/"
+  else
+    halt 401, { "Content-Type" => "text/html" }, login_page.sub(
+      "</form>",
+      '<div class="error">Invalid passcode</div></form>'
+    )
+  end
+end
+
+post "/auth/logout" do
+  session.clear
+  redirect "/"
 end
 
 # ── Static UI ────────────────────────────────────────────────
@@ -264,18 +355,20 @@ end
 
 # ── Manual startup with TOCTOU retry ────────────────────────
 
-MAX_PORT_RETRIES = 3
+if __FILE__ == $PROGRAM_NAME
+  MAX_PORT_RETRIES = 3
 
-retries = 0
-begin
-  Sinatra::Application.run!
-rescue Errno::EADDRINUSE
-  retries += 1
-  if retries < MAX_PORT_RETRIES
-    new_port = TCPServer.open("0.0.0.0", 0) { |s| s.addr[1] }
-    $stderr.puts "Port #{settings.port} in use, retrying on #{new_port}..."
-    set :port, new_port
-    retry
+  retries = 0
+  begin
+    Sinatra::Application.run!
+  rescue Errno::EADDRINUSE
+    retries += 1
+    if retries < MAX_PORT_RETRIES
+      new_port = TCPServer.open("0.0.0.0", 0) { |s| s.addr[1] }
+      $stderr.puts "Port #{settings.port} in use, retrying on #{new_port}..."
+      set :port, new_port
+      retry
+    end
+    raise
   end
-  raise
 end
