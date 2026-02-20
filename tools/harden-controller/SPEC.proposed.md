@@ -16,13 +16,13 @@ The architecture is task-agnostic — both modes use the same discover-analyze-d
 | **Pipeline** | The singleton `Pipeline` instance (`$pipeline`) that manages all state, threading, and phase orchestration. One per server process. |
 | **Controller** | A Rails controller file discovered by glob. The unit of analysis, decision-making, and workflow tracking. |
 | **Workflow** | Per-controller state machine tracking progress through pipeline phases. Keyed by controller basename (e.g., `posts_controller`). A workflow progresses through hardening mode first, then enhance mode. |
-| **Phase** | A discrete step in the pipeline. Hardening mode: discover, analyze, decide, harden, test, ci_check, verify. Enhance mode: e_analyze, e_research, e_extract, e_synthesize, e_audit, e_decide, e_batch_plan, e_apply, e_test, e_ci_check, e_verify. Each phase either calls `claude -p`, runs shell commands, calls the Claude Messages API, or awaits human input. |
+| **Phase** | A discrete step in the pipeline. Hardening mode: discover, analyze, decide, harden, test, ci_check, verify. Enhance mode: e_analyze, e_awaiting_research, e_extract, e_synthesize, e_audit, e_decide, e_batch_plan, e_apply, e_test, e_ci_check, e_verify. Each phase either calls `claude -p`, runs shell commands, calls the Claude Messages API, or awaits human input. |
 | **Mode** | Either `hardening` or `enhance`. Determines which phase sequence a controller follows. Per-controller — different controllers can be in different modes simultaneously. |
 | **Finding** | A structured analysis result identifying a hardening opportunity (hardening mode). Has severity (high/medium/low), category, scope (controller/module/app), and suggested fix. |
 | **Blocker** | A finding with scope `module` or `app` — requires changes beyond the controller file. Displayed separately in the UI; must be dismissed before hardening proceeds. |
 | **Item** | A structured improvement opportunity (enhance mode). Has description, impact rating (high/medium/low), effort rating (high/medium/low), and rationale. Items progress through statuses: POSSIBLE → READY → TODO/DEFER/REJECT. |
 | **Batch** | A subset of approved TODO items grouped for implementation in a single `claude -p` call (enhance mode). Determined by effort, file overlap, and dependencies. |
-| **Grant** | A LockGrant — an active set of read and/or write locks held by a work item (enhance mode). |
+| **Grant** | A LockGrant — an active set of write locks held by a work item (enhance mode). |
 | **Work item** | A unit of work dispatched to the Scheduler (enhance mode). Maps to one controller (for read-only phases) or one batch (for write phases). |
 | **Sidecar** | A JSON file stored in a `.harden/` (hardening mode) or `.enhance/` (enhance mode) directory adjacent to the target controller. Persists phase outputs across restarts. Both directories are configurable. |
 | **Decision** | The operator's response to analysis findings. In hardening mode: `approve`, `selective`, `modify`, or `skip`. In enhance mode: `TODO`, `DEFER`, or `REJECT` per item. |
@@ -75,7 +75,7 @@ Terminal/retry statuses:
 
 ```
 h_complete →
-  e_analyzing → e_researching → e_extracting → e_synthesizing → e_auditing →
+  e_analyzing → e_awaiting_research → e_extracting → e_synthesizing → e_auditing →
   e_awaiting_decisions → e_planning_batches → e_awaiting_batch_approval →
   [per batch, sequential: e_applying → e_testing/e_fixing_tests → e_ci_checking/e_fixing_ci → e_verifying → e_batch_complete] →
   e_enhance_complete
@@ -88,10 +88,10 @@ Enhance mode phases operate at two granularities: phases through `e_awaiting_bat
 | # | Phase | Granularity | Execution | Write locks | Human | Output |
 |---|---|---|---|---|---|---|
 | E0 | Analyze | Controller | Parallel | No | No | Intent analysis + research topics |
-| E1 | Research | Controller | Mixed | No | Yes (choose method per topic) | Research results |
+| E1 | Research | Controller | Human gate + async API | No | Yes (per-topic: API or paste or reject) | Research results |
 | E2 | Extract | Controller | Parallel | No | No | POSSIBLE items |
 | E3 | Synthesize | Controller | Parallel | No | No | READY items + ratings |
-| E4 | Audit | Controller | Parallel | No | No | De-duped READY items |
+| E4 | Audit | Controller | Parallel | No | No | Annotated READY items |
 | E5 | Decide | Controller | — | No | Yes (TODO/DEFER/REJECT) | Approved TODOs |
 | E6 | Batch plan | Controller | Per-controller | No | Yes (accept or reject with notes) | Batch definitions + write targets |
 | E7 | Apply | Batch | Sequential* | Yes | No | Modified files |
@@ -109,13 +109,14 @@ Input: controller source, views, routes, related models, hardening verification 
 Output: analysis document + research topic prompts.
 Status: `e_analyzing`
 
-**E1 — Research**: Per controller. The `e_researching` status is the human gate for this phase — topics are displayed in the UI and the operator resolves them one at a time. For each research topic from analysis, the operator chooses one of:
-1. **Claude API** — send the prompt to the Claude Messages API with the `web_search_20250305` tool (up to 10 searches per topic). The pipeline makes the HTTP call and stores the response.
-2. **Manual paste** — the operator researches the topic externally (claude.ai, documentation, etc.) and pastes the result into the UI.
+**E1 — Research**: Per controller. Human gate with per-topic state. All research topics from E0 are displayed in the UI simultaneously. Each topic has its own status: `pending` (awaiting operator action), `researching` (API call in flight), `completed` (result stored), or `rejected` (operator deemed topic irrelevant). For each topic, the operator independently chooses one of:
+1. **Claude API** — click "USE API" to send the prompt to the Claude Messages API with the `web_search_20250305` tool (up to 10 searches per topic). The pipeline makes the HTTP call in a background thread and stores the response. Topic status: `pending` → `researching` → `completed` (or back to `pending` on API failure).
+2. **Manual paste** — the operator researches the topic externally (claude.ai, documentation, etc.) and pastes the result into the UI. Topic status: `pending` → `completed`.
+3. **Reject** — the operator marks the topic as irrelevant. Topic status: `pending` → `rejected`. Rejected topics are excluded from E2 extraction input.
 
-Research results are stored per-topic. The phase completes for a controller when all topics have responses, automatically advancing to `e_extracting`. This phase is not dispatched to `claude -p` — it's a gathering phase.
+Multiple API calls can run concurrently (bounded by `MAX_API_CONCURRENCY`). The workflow-level status stays `e_awaiting_research` throughout — per-topic statuses are tracked in the workflow's `research_topics` data, not the workflow status field. The phase completes for a controller when all non-rejected topics are `completed`, automatically advancing to `e_extracting`. This phase is not dispatched to `claude -p` — it's a gathering phase.
 
-Status: `e_researching`
+Status: `e_awaiting_research`
 
 **E2 — Extract**: Per controller. From all research results, generate a list of POSSIBLE actionable items. Uses `claude -p --dangerously-skip-permissions`. Each item is a concrete improvement.
 
@@ -129,13 +130,13 @@ Input: analysis document + POSSIBLE items + controller source code.
 Output: READY items list with ratings and rationale.
 Status: `e_synthesizing`
 
-**E4 — Audit**: Per controller. A `claude -p --dangerously-skip-permissions` call that compares READY items against existing deferred and rejected items from this controller's prior runs. De-duplicate using AI judgment — rejected items don't reappear unless the operator explicitly re-enables them. Deferred items are flagged but included. Prior decisions are stored per-controller in the `.enhance/` sidecar directory.
+**E4 — Audit**: Per controller. A `claude -p --dangerously-skip-permissions` call that compares READY items against existing deferred and rejected items from this controller's prior runs. Uses AI judgment to annotate items with prior-decision context (e.g., "previously deferred with note: …", "previously rejected"). All items are preserved — no items are filtered out. Prior decisions are stored per-controller in the `.enhance/` sidecar directory.
 
 Input: READY items list + this controller's persistent deferred/rejected items.
-Output: de-duped READY items list with prior-decision annotations.
+Output: annotated READY items list with prior-decision context and suggested defaults.
 Status: `e_auditing`
 
-**E5 — Decide**: Human gate. The operator reviews each READY item and categorizes it: **TODO** (approved), **DEFER** (revisit later, persists per-controller), or **REJECT** (not wanted, persists per-controller). The operator can also propose new items not surfaced by analysis/research.
+**E5 — Decide**: Human gate. Items are displayed sorted by prior-decision status: new items first (default **TODO**), previously deferred items in the middle (default **DEFER**), previously rejected items last (default **REJECT**). The operator reviews each item and categorizes it: **TODO** (approved), **DEFER** (revisit later, persists per-controller), or **REJECT** (not wanted, persists per-controller). All defaults can be overridden — a previously rejected item can be changed to TODO, etc.
 
 Status: `e_awaiting_decisions`
 
@@ -162,7 +163,7 @@ All state lives in `@state` (a Hash), accessed exclusively through `@mutex.synch
 
 Workflow entries contain: `name`, `path`, `full_path`, `mode` (`"hardening"` or `"enhance"`), `status`, `analysis`, `decision`, `hardened`, `test_results`, `ci_results`, `verification`, `error`, `started_at`, `completed_at`, `original_source`.
 
-Enhance mode adds to workflow entries: `e_analysis`, `research_topics`, `research_results`, `possible_items`, `ready_items`, `e_decisions`, `batches`, `current_batch_id` (the batch currently executing, or nil).
+Enhance mode adds to workflow entries: `e_analysis`, `research_topics` (array of topic objects, each with `prompt`, `status` [`pending`/`researching`/`completed`/`rejected`], and `result`), `possible_items`, `ready_items`, `e_decisions`, `batches`, `current_batch_id` (the batch currently executing, or nil).
 
 Both modes share a single `status` field per workflow. The `mode` field (`"hardening"` or `"enhance"`) tracks which mode is active. All statuses are prefixed by mode (`h_` or `e_`), making each status globally unique. `ACTIVE_STATUSES` includes all async statuses from both modes:
 
@@ -172,7 +173,7 @@ ACTIVE_STATUSES = [
   "h_analyzing", "h_hardening", "h_testing", "h_fixing_tests",
   "h_ci_checking", "h_fixing_ci", "h_verifying",
   # enhance
-  "e_analyzing", "e_researching", "e_extracting", "e_synthesizing",
+  "e_analyzing", "e_extracting", "e_synthesizing",
   "e_auditing", "e_planning_batches", "e_applying", "e_testing",
   "e_fixing_tests", "e_ci_checking", "e_fixing_ci", "e_verifying"
 ]
@@ -213,31 +214,15 @@ Ad-hoc questions and finding explanations are tracked in a separate `@queries` i
 
 Thread-safe object that tracks active grants and resolves conflicts. All state guarded by a single `Mutex`. Only used by enhance mode — hardening mode dispatches directly via `safe_thread` with no locking.
 
-**Lock types:**
+**Lock type:** Write-only. The LockManager only tracks write locks — there are no read locks. Read-only phases (E0-E4) bypass the lock system entirely.
 
 | Lock | Semantics | Used by |
 |---|---|---|
-| **Read** | Multiple readers allowed; may target files or directories | Read-only phases (optional), write phases reading analysis output |
 | **Write** | Exclusive; must target individual files (not directories) | Apply/test/CI/verify phases modifying app code |
 
-**Conflict rules:**
+**Conflict rules:** Two write locks on overlapping paths are BLOCKED. All other combinations are allowed (no read locks exist).
 
-| Held \ Requested | Read | Write |
-|---|---|---|
-| **Read** | OK | BLOCKED |
-| **Write** | BLOCKED | BLOCKED |
-
-**Path overlap:**
-
-| Active lock | Requested lock | Overlap? |
-|---|---|---|
-| File A | File A | Yes |
-| File A | File B | No |
-| Directory D | File within D | Yes |
-| File within D | Directory D | Yes |
-| Directory D | Directory E | Yes if one contains the other; No if disjoint |
-
-When paths overlap, the compatibility matrix determines whether the request is blocked.
+**Path overlap:** Since write locks must target individual files (not directories), overlap is a simple exact-path check: File A and File A overlap; File A and File B do not.
 
 **Over-lock detection:** Write lock requests specifying a directory path are rejected with an `OverLockError`. Write locks must always specify individual files.
 
@@ -247,23 +232,26 @@ When paths overlap, the compatibility matrix determines whether the request is b
 - **Timeout-bounded queuing.** Work items wait up to `LOCK_TIMEOUT` seconds (default 300). If the timeout expires, the item stays queued with an incremented retry count. Items exceeding `MAX_LOCK_RETRIES` move to error state.
 - **No lock expansion after dispatch.** Once dispatched, an agent's lock footprint is fixed. If the agent discovers it needs a file it didn't lock, the write is rejected by `safe_write` and the gap is surfaced to the operator. The fix is to refine batch planning prompts, not to weaken enforcement.
 
-**Grant lifecycle:** Grants are held through the entire batch write lifecycle (apply → test → CI → verify) in a single thread. Released on completion or error via `ensure` block. Each grant has a TTL (default 30 minutes) as a safety net — a background reaper releases expired grants.
+**Grant lifecycle:** Grants are held through the entire batch write lifecycle (apply → test → CI → verify) in a single thread. Released on completion or error via `ensure` block. Each grant has a TTL (default 30 minutes) with **heartbeat renewal** — the TTL is renewed each time a `claude -p` call completes within the grant's scope. A background reaper releases grants whose TTL has expired without renewal, handling edge cases where a thread dies without releasing (e.g., `Thread.kill` from signal handler). Normal operation releases grants explicitly via `ensure` blocks; the reaper is a safety net only.
 
 **Methods:**
 
 ```ruby
 # Non-blocking. Returns a LockGrant if all paths can be locked, nil otherwise.
 # Raises OverLockError if any write path is a directory.
-try_acquire(holder:, read_paths: [], write_paths: []) -> LockGrant | nil
+try_acquire(holder:, write_paths:) -> LockGrant | nil
 
 # Blocking up to timeout. Returns a LockGrant or raises LockTimeoutError.
-acquire(holder:, read_paths: [], write_paths: [], timeout: 300) -> LockGrant
+acquire(holder:, write_paths:, timeout: 300) -> LockGrant
 
 # Release a grant. Idempotent.
 release(grant_id:)
 
+# Renew a grant's TTL (called after each claude -p return). Idempotent.
+renew(grant_id:)
+
 # Check what would conflict without acquiring. For diagnostics and UI.
-check_conflicts(read_paths: [], write_paths: []) -> [ConflictInfo]
+check_conflicts(write_paths:) -> [ConflictInfo]
 
 # Snapshot of all active grants. For SSE state broadcast.
 active_grants -> [GrantSnapshot]
@@ -275,10 +263,9 @@ active_grants -> [GrantSnapshot]
 |---|---|---|
 | `id` | String | Unique grant identifier (UUID) |
 | `holder` | String | Identifier of the work item holding the grant |
-| `read_paths` | Array\<String\> | File and directory paths with read access |
 | `write_paths` | Array\<String\> | File paths with write access (no directories) |
 | `acquired_at` | Time | When the grant was issued |
-| `expires_at` | Time | TTL expiry (default 30 minutes) |
+| `expires_at` | Time | TTL expiry (default 30 minutes, renewed on heartbeat) |
 | `released` | Boolean | Whether the grant has been released |
 
 **Contention model:** Every file in the target app belongs at exactly one level in a three-level hierarchy. This is a conceptual model for reasoning about lock contention, not a system concept — the LockManager operates at file granularity.
@@ -321,7 +308,7 @@ active_items -> [WorkItem]
 | `id` | String | Unique identifier |
 | `workflow` | String | Controller name (phases E0-E6) or batch identifier (phases E7-E10) |
 | `phase` | Symbol | `:e_analyze`, `:e_extract`, `:e_synthesize`, `:e_audit`, `:e_apply`, etc. |
-| `lock_request` | LockRequest | Read and write paths needed |
+| `lock_request` | LockRequest | Write paths needed (empty for read-only phases) |
 | `status` | Symbol | `:queued`, `:dispatched`, `:completed`, `:error` |
 | `queued_at` | Time | When the item entered the queue |
 | `dispatched_at` | Time | When dispatched |
@@ -331,8 +318,7 @@ active_items -> [WorkItem]
 
 | Field | Type | Description |
 |---|---|---|
-| `read_paths` | Array\<String\> | File and directory paths needing read access |
-| `write_paths` | Array\<String\> | File paths needing write access (no directories) |
+| `write_paths` | Array\<String\> | File paths needing write access (no directories). Empty for read-only phases. |
 
 **Priority ordering:** Near-completion work first: `e_verifying > e_testing/e_ci_checking > e_applying > e_extracting/e_synthesizing/e_auditing > e_analyzing`. Starvation prevention: work items waiting longer than 10 minutes receive priority escalation.
 
@@ -346,7 +332,6 @@ loop do
     next unless claude_slot_available?
     grant = @lock_manager.try_acquire(
       holder: item.id,
-      read_paths: item.lock_request.read_paths,
       write_paths: item.lock_request.write_paths
     )
     next unless grant
@@ -374,7 +359,7 @@ post '/enhance/analyze/:controller' do
     $pipeline.scheduler.enqueue(
       workflow: params[:controller],
       phase: :e_analyze,
-      lock_request: LockRequest.new(read_paths: [...], write_paths: [])
+      lock_request: LockRequest.new(write_paths: [])
     )
   else
     safe_thread { $pipeline.run_enhance_analysis(params[:controller]) }
@@ -382,7 +367,7 @@ post '/enhance/analyze/:controller' do
 end
 ```
 
-Human-gate phases (`e_awaiting_decisions`, `e_awaiting_batch_approval`) update state directly on operator action without the Scheduler.
+Human-gate phases (`e_awaiting_research`, `e_awaiting_decisions`, `e_awaiting_batch_approval`) update state directly on operator action without the Scheduler.
 
 ### Frontend
 
@@ -397,7 +382,7 @@ Enhance mode adds UI for: research topic management (API call vs manual paste), 
 | `server.rb` | Sinatra routes, authentication, SSE streaming, CORS, CSRF protection, signal handling, startup |
 | `pipeline.rb` | `Pipeline` class definition, constants, `try_transition`, `initialize`, `reset!`, `to_json`, state accessors |
 | `pipeline/orchestration.rb` | Hardening phase logic: `discover_controllers`, `run_analysis`, `load_existing_analysis`, `submit_decision`, `ask_question`, `explain_finding`. Delegates to shared phases for harden/test/ci/verify. |
-| `pipeline/enhance_orchestration.rb` | Enhance phase logic: `run_enhance_analysis`, `submit_research`, `run_extraction`, `run_synthesis`, `run_audit`, `submit_enhance_decisions`, `run_batch_planning`. Delegates to shared phases for batch apply/test/ci/verify. |
+| `pipeline/enhance_orchestration.rb` | Enhance phase logic: `run_enhance_analysis`, `submit_research`, `submit_research_api`, `run_extraction`, `run_synthesis`, `run_audit`, `submit_enhance_decisions`, `run_batch_planning`. Delegates to shared phases for batch apply/test/ci/verify. |
 | `pipeline/shared_phases.rb` | Shared core orchestration for apply/test/ci/verify used by both modes. Parameterized by mode-specific prompts, state keys, status names, sidecar config, and optional grant_id. |
 | `pipeline/claude_client.rb` | `claude_call` (acquire CLI slot, spawn CLI, release slot), `parse_json_response` (strips markdown fences, extracts JSON from prose), `api_call` (Claude Messages API with web search for research) |
 | `pipeline/process_management.rb` | `safe_thread`, `cancel!`, `cancelled?`, `shutdown`, `spawn_with_timeout`, `run_all_ci_checks` |
@@ -431,13 +416,13 @@ Enhance mode adds UI for: research topic management (API call vs manual paste), 
 | `test/try_transition_test.rb` | `:not_active` guard (no workflow, active, completed, error, unknown), named guards, concurrent transitions |
 | `test/sanitize_error_test.rb` | Rails root replacement, realpath replacement, no-path passthrough, non-string input |
 | `test/enhance_analysis_test.rb` | Enhance analysis happy path, research topic generation, hardening prerequisite check |
-| `test/research_test.rb` | API research path (with web search), manual paste, topic completion tracking, API failure recovery |
+| `test/research_test.rb` | Per-topic state (pending/researching/completed/rejected), API research path (with web search), manual paste, topic rejection, completion tracking, API failure recovery |
 | `test/extraction_test.rb` | Item extraction from research results, POSSIBLE item generation |
 | `test/synthesis_test.rb` | Impact/effort rating, filtering already-implemented items, READY item generation |
-| `test/audit_test.rb` | De-duplication via claude -p against per-controller deferred/rejected items, prior-decision annotations |
+| `test/audit_test.rb` | Annotation (not filtering) via claude -p against per-controller deferred/rejected items, prior-decision context and suggested defaults |
 | `test/batch_planning_test.rb` | Batch grouping by effort/overlap/dependencies, write target declaration |
 | `test/batch_execution_test.rb` | Batch apply/test/ci/verify with lock grants, shared core orchestration, sequential batch chain, current_batch_id tracking |
-| `test/lock_manager_test.rb` | try_acquire, acquire with timeout, release, conflict detection, over-lock rejection, grant TTL reaper |
+| `test/lock_manager_test.rb` | try_acquire, acquire with timeout, release, conflict detection, over-lock rejection, grant TTL reaper, heartbeat renewal |
 | `test/scheduler_test.rb` | Enqueue, dispatch loop, priority ordering, starvation prevention, graceful shutdown |
 | `test/api_call_test.rb` | Claude Messages API with web search tool, API semaphore concurrency limiting, response extraction, error handling |
 
@@ -447,7 +432,7 @@ Enhance mode adds UI for: research topic management (API call vs manual paste), 
 
 - **Sequential phase chaining within a thread (hardening mode)**: `run_hardening` directly calls `run_testing`, which calls `run_ci_checks`, which calls `run_verification`. This eliminates coordination overhead between phases and ensures the controller file is not modified between phases. The thread holds the workflow from hardening through verification.
 
-- **Scheduler-dispatched phases (enhance mode)**: Enhance mode uses the Scheduler for dispatch instead of direct `safe_thread` calls. This enables parallel execution across controllers with lock-based conflict resolution for shared resources. Read-only phases (E0-E4) are dispatched without locks. Write phases (E7-E10) acquire locks before dispatch.
+- **Scheduler-dispatched phases (enhance mode)**: Enhance mode uses the Scheduler for dispatch instead of direct `safe_thread` calls. This enables parallel execution across controllers with lock-based conflict resolution for shared resources. Read-only phases (E0-E4) are dispatched through the Scheduler with empty lock requests (no write locks needed). Write phases (E7-E10) acquire write locks before dispatch.
 
 - **Sequential batches within a controller, parallel across controllers**: Within a controller, batches execute one at a time — the full E7→E10 chain completes before the next batch begins. This simplifies status tracking (the workflow's `current_batch_id` and `status` fields track the active batch) and avoids intra-controller conflicts. Across controllers, the Scheduler dispatches batches concurrently, with the LockManager mediating access to shared files (e.g., concerns, layouts, migrations). The dispatched thread runs the full apply→test→ci→verify chain sequentially, holding the grant throughout. This mirrors hardening's sequential chaining.
 
@@ -489,9 +474,11 @@ Enhance mode adds UI for: research topic management (API call vs manual paste), 
 
 - **Shared core orchestration for write phases**: Apply/test/ci/verify logic is extracted from hardening's orchestration into shared helpers in `shared_phases.rb`. Both hardening and enhance modes call these shared helpers with mode-specific parameters: prompts, state keys, status names, sidecar configuration, and optional grant_id. This avoids duplication while keeping the modes' prompt templates and sidecar formats independent.
 
-- **LockManager uses all-or-nothing acquisition**: Deadlock prevention without lock ordering. A work item requests all needed paths at once — either all are granted or none. Combined with the Scheduler's dispatch loop, this ensures no hold-and-wait condition.
+- **Write-only locks**: The LockManager only tracks write locks — there are no read locks. Read-only phases (E0-E4) bypass the lock system entirely and may read slightly stale data, which is harmless for analysis phases. This simplifies the LockManager and maximizes parallelism.
 
-- **Grant TTL as safety net**: Each grant expires after 30 minutes. A background reaper releases expired grants. This handles edge cases where a thread dies without releasing (e.g., `Thread.kill` from signal handler). Normal operation releases grants explicitly via `ensure` blocks.
+- **LockManager uses all-or-nothing acquisition**: Deadlock prevention without lock ordering. A work item requests all needed write paths at once — either all are granted or none. Combined with the Scheduler's dispatch loop, this ensures no hold-and-wait condition.
+
+- **Grant TTL with heartbeat renewal**: Each grant has a 30-minute TTL, renewed each time a `claude -p` call completes within the grant's scope. A background reaper releases grants whose TTL has expired without renewal. This handles edge cases where a thread dies without releasing (e.g., `Thread.kill` from signal handler) while avoiding false expiry of long-running but active batches. Normal operation releases grants explicitly via `ensure` blocks.
 
 - **Research via Messages API with web search**: Research topics benefit from current web information. The Claude Messages API is called with the `web_search_20250305` tool (up to 10 searches per topic), enabling the model to gather current documentation, best practices, and examples. A separate concurrency limit (`MAX_API_CONCURRENCY` = 20, enforced by `@api_semaphore` + `@api_slots`) keeps API calls from starving CLI calls. The API response includes web search tool results that must be extracted and aggregated into the final research output.
 
@@ -544,7 +531,7 @@ The path allowlist and grant coverage serve as independent safety layers: the al
 `try_transition` enforces two guard types:
 
 - **`:not_active`** — succeeds if no workflow exists for the controller, or if the existing workflow's status is not in `ACTIVE_STATUSES`. Creates or resets the workflow. Prevents double-starts.
-- **Named guard** (e.g., `"h_awaiting_decisions"`, `"h_complete"`, `"e_awaiting_batch_approval"`) — succeeds only if the workflow's current status exactly matches the guard string. Used for phase-specific transitions (e.g., decisions can only be submitted when status is `h_awaiting_decisions`; enhance analysis can only start when status is `h_complete`; batch approval requires `e_awaiting_batch_approval`).
+- **Named guard** (e.g., `"h_awaiting_decisions"`, `"h_complete"`, `"e_awaiting_research"`, `"e_awaiting_batch_approval"`) — succeeds only if the workflow's current status exactly matches the guard string. Used for phase-specific transitions (e.g., decisions can only be submitted when status is `h_awaiting_decisions`; enhance analysis can only start when status is `h_complete`; research submission requires `e_awaiting_research`; batch approval requires `e_awaiting_batch_approval`).
 
 Both guards operate atomically under `@mutex`. On success, the status is updated and error is cleared. On failure, a descriptive error string is returned.
 
@@ -630,7 +617,7 @@ Each enhance phase writes structured output to the `.enhance/` sidecar directory
 
 Resume rules:
 - If `.harden/verification.json` exists → status is `h_complete` (eligible for enhance).
-- If `.enhance/analysis.json` exists but `research/` is incomplete → status is `e_researching`.
+- If `.enhance/analysis.json` exists but `research/` is incomplete → status is `e_awaiting_research`.
 - If `.enhance/decisions.json` exists but `batches.json` does not → status is `e_awaiting_decisions` (ready for re-submission).
 - If `.enhance/batches.json` exists but no batch has `apply.json` → status is `e_awaiting_batch_approval`.
 - If a batch's `apply.json` exists but `test_results.json` does not → that batch resumes at testing.
@@ -674,10 +661,10 @@ Pipeline.new(
 ### Enhance Mode
 
 - **Agent crash mid-batch**: `safe_thread` catches exceptions and sets workflow to `error`. Grant is released via `ensure` block. Retry button re-runs the batch from apply.
-- **Lock leak (grant not released)**: Grant TTL (30 minutes) expires. Background reaper releases it. Safety net only — normal operation releases explicitly.
+- **Lock leak (grant not released)**: Grant TTL (30 minutes, renewed on `claude -p` return) expires without renewal. Background reaper releases it. Safety net only — normal operation releases explicitly.
 - **Deadlock prevention**: All-or-nothing acquisition eliminates hold-and-wait. Starvation handled by priority escalation after 10 minutes.
 - **Incomplete write targets**: `safe_write` rejects writes to unlocked files with `LockViolationError`. Surfaces batch planning deficiencies — fix is to refine prompts.
-- **Research phase failure**: API call failure reverts the topic to "pending". Operator can retry (API) or paste manually. Research does not block other controllers.
+- **Research phase failure**: API call failure reverts the topic status to `pending`. Operator can retry (API) or paste manually. Per-topic state means one topic's failure does not affect others. Research does not block other controllers.
 - **Sidecar corruption**: Malformed sidecar file on resume → phase treated as incomplete and re-run. Phase outputs are idempotent.
 
 ## Non-Goals
