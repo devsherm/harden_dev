@@ -27,6 +27,11 @@ set :host_authorization, permitted_hosts: []
 
 HARDEN_PASSCODE = ENV["HARDEN_PASSCODE"]
 
+# ── Rate limiting for /auth ─────────────────────────────────
+AUTH_ATTEMPTS = {}  # ip => { count:, first_at: }
+AUTH_MAX_ATTEMPTS = 5
+AUTH_WINDOW = 900  # 15 minutes
+
 # Rails root defaults to current directory (run from within your Rails project)
 RAILS_ROOT = ENV.fetch("RAILS_ROOT", ".")
 
@@ -45,12 +50,16 @@ at_exit { $pipeline.shutdown(timeout: 5) }
 # Auto-discover controllers at startup so selection is the opening screen
 $pipeline.safe_thread { $pipeline.discover_controllers }
 
-# ── CORS (for local dev if frontend runs separately) ────────
+# ── CORS (opt-in for separate frontend during local dev) ────
+
+CORS_ORIGIN = ENV["CORS_ORIGIN"]
 
 before do
-  headers "Access-Control-Allow-Origin" => "*",
-          "Access-Control-Allow-Methods" => "GET, POST, OPTIONS",
-          "Access-Control-Allow-Headers" => "Content-Type"
+  if CORS_ORIGIN
+    headers "Access-Control-Allow-Origin" => CORS_ORIGIN,
+            "Access-Control-Allow-Methods" => "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers" => "Content-Type, X-Requested-With"
+  end
 
   # ── Passcode auth gate ──────────────────────────────────
   next if HARDEN_PASSCODE.nil?                         # no passcode configured → open
@@ -65,10 +74,18 @@ before do
            { error: "Unauthorized" }.to_json
     end
   end
+
+  # ── CSRF protection ─────────────────────────────────────
+  if request.post? && request.path_info != "/auth"
+    unless request.env["HTTP_X_REQUESTED_WITH"] == "XMLHttpRequest"
+      halt 403, { "Content-Type" => "application/json" },
+           { error: "Missing X-Requested-With header" }.to_json
+    end
+  end
 end
 
-options "*" do
-  200
+if CORS_ORIGIN
+  options("*") { 200 }
 end
 
 # ── Helpers ──────────────────────────────────────────────────
@@ -133,12 +150,33 @@ end
 # ── Authentication ───────────────────────────────────────────
 
 post "/auth" do
+  client_ip = request.ip
+
+  # ── Rate limiting ───────────────────────────────────────
+  attempt = AUTH_ATTEMPTS[client_ip]
+  if attempt && attempt[:count] >= AUTH_MAX_ATTEMPTS && (Time.now.to_i - attempt[:first_at]) < AUTH_WINDOW
+    halt 429, { "Content-Type" => "text/html" }, login_page.sub(
+      "</form>",
+      '<div class="error">Too many attempts. Try again later.</div></form>'
+    )
+  end
+
   if HARDEN_PASSCODE && Rack::Utils.secure_compare(params["passcode"].to_s, HARDEN_PASSCODE)
+    AUTH_ATTEMPTS.delete(client_ip)
     session[:authenticated] = true
     redirect "/"
   elsif HARDEN_PASSCODE.nil?
     redirect "/"
   else
+    now = Time.now.to_i
+    if attempt.nil? || (now - attempt[:first_at]) >= AUTH_WINDOW
+      AUTH_ATTEMPTS[client_ip] = { count: 1, first_at: now }
+    else
+      attempt[:count] += 1
+    end
+    # Prune expired entries to prevent memory growth
+    AUTH_ATTEMPTS.delete_if { |_, v| (now - v[:first_at]) >= AUTH_WINDOW }
+
     halt 401, { "Content-Type" => "text/html" }, login_page.sub(
       "</form>",
       '<div class="error">Invalid passcode</div></form>'
@@ -356,6 +394,23 @@ end
 # ── Manual startup with TOCTOU retry ────────────────────────
 
 if __FILE__ == $PROGRAM_NAME
+  # Auto-generate passcode if binding to non-localhost without one
+  if HARDEN_PASSCODE.nil?
+    bind_addr = Sinatra::Application.bind
+    unless bind_addr == "127.0.0.1" || bind_addr == "localhost"
+      generated = SecureRandom.hex(12)
+      $stderr.puts "=" * 60
+      $stderr.puts "WARNING: No HARDEN_PASSCODE set while binding to #{bind_addr}"
+      $stderr.puts "Auto-generated passcode: #{generated}"
+      $stderr.puts "Set HARDEN_PASSCODE env var to use your own."
+      $stderr.puts "=" * 60
+      old_verbose = $VERBOSE
+      $VERBOSE = nil
+      Object.const_set(:HARDEN_PASSCODE, generated)
+      $VERBOSE = old_verbose
+    end
+  end
+
   MAX_PORT_RETRIES = 3
 
   retries = 0

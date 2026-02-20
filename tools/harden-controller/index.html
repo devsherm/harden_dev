@@ -4,8 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Harden Orchestrator</title>
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"
+          integrity="sha384-H+hy9ULve6xfxRkWIh/YOtvDdpXgV2fmAGQkIDTxIgZwNoaoBal14Di2YTMR6MzR"
+          crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.5/dist/purify.min.js"
+          integrity="sha384-qSFej5dZNviyoPgYJ5+Xk4bEbX8AYddxAHPuzs1aSgRiXxJ3qmyWNaPsRkpv/+x5"
+          crossorigin="anonymous"></script>
   <style>
     :root {
       --bg: #0f1117;
@@ -625,6 +629,10 @@
     // ── API Calls ─────────────────────────────────────────────
 
     async function apiFetch(url, options = {}) {
+      options.headers = {
+        'X-Requested-With': 'XMLHttpRequest',
+        ...(options.headers || {})
+      };
       const res = await fetch(url, options);
       if (res.status === 401) {
         window.location.reload();
@@ -643,7 +651,7 @@
     }
 
     async function logout() {
-      await fetch('/auth/logout', { method: 'POST' });
+      await apiFetch('/auth/logout', { method: 'POST' });
       window.location.reload();
     }
 
