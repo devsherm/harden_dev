@@ -10,6 +10,9 @@
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.5/dist/purify.min.js"
           integrity="sha384-qSFej5dZNviyoPgYJ5+Xk4bEbX8AYddxAHPuzs1aSgRiXxJ3qmyWNaPsRkpv/+x5"
           crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/morphdom@2.7.4/dist/morphdom-umd.min.js"
+          integrity="sha384-1Kpyy6fJtxPI22Yq5Lt3SzKVMJDfDDChb4HFf0stEn8pNSz3e9Mvgfjv5hrqsT1U"
+          crossorigin="anonymous"></script>
   <style>
     :root {
       --bg: #0f1117;
@@ -796,18 +799,7 @@
       const phase = pipeline.phase;
       const isDiscovering = phase === 'idle' || phase === 'discovering';
 
-      // Save DOM state before re-render
-      const askInput = document.getElementById('ask-input');
-      const savedAskValue = askInput ? askInput.value : '';
-      const savedAskFocused = askInput && document.activeElement === askInput;
-      const savedAskSelStart = askInput ? askInput.selectionStart : 0;
-      const savedAskSelEnd = askInput ? askInput.selectionEnd : 0;
-      const sidebar = document.querySelector('.sidebar');
-      const detailPanel = document.querySelector('.detail-panel');
-      const savedSidebarScroll = sidebar ? sidebar.scrollTop : 0;
-      const savedDetailScroll = detailPanel ? detailPanel.scrollTop : 0;
-
-      app.innerHTML = `
+      const html = `<div id="app">
         <header>
           <div style="display:flex;align-items:center;gap:1rem;">
             <h1>Harden Orchestrator</h1>
@@ -830,21 +822,17 @@
             ${renderDetailPanel()}
           </div>
         </div>
-      `;
+      </div>`;
 
-      // Restore DOM state after re-render
-      const newAskInput = document.getElementById('ask-input');
-      if (newAskInput) {
-        if (savedAskValue) newAskInput.value = savedAskValue;
-        if (savedAskFocused) {
-          newAskInput.focus();
-          newAskInput.setSelectionRange(savedAskSelStart, savedAskSelEnd);
+      morphdom(app, html, {
+        onBeforeElUpdated(fromEl, toEl) {
+          if (fromEl === document.activeElement &&
+              (fromEl.tagName === 'INPUT' || fromEl.tagName === 'TEXTAREA')) {
+            return false;
+          }
+          return true;
         }
-      }
-      const newSidebar = document.querySelector('.sidebar');
-      const newDetailPanel = document.querySelector('.detail-panel');
-      if (newSidebar) newSidebar.scrollTop = savedSidebarScroll;
-      if (newDetailPanel) newDetailPanel.scrollTop = savedDetailScroll;
+      });
     }
 
     function renderHeaderSummary() {
