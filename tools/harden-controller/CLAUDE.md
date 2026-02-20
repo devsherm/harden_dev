@@ -41,7 +41,7 @@ Each phase is a `claude -p` call or shell command. Phases run in `safe_thread` �
 | `pipeline/orchestration.rb` | Phase logic: discover, analyze, apply, test, ci_check, verify |
 | `pipeline/claude_client.rb` | `claude_call`, concurrency semaphore, JSON response parsing |
 | `pipeline/process_management.rb` | `safe_thread`, `spawn_with_timeout`, `shutdown`, CI check runner |
-| `pipeline/sidecar.rb` | Read/write `.harden/` sidecar files next to controllers |
+| `pipeline/sidecar.rb` | Read/write sidecar files (default `.harden/`) next to targets |
 | `prompts.rb` | All `claude -p` prompt templates |
 | `index.html` | Single-file SPA (all CSS, JS, HTML inline) |
 
@@ -94,7 +94,7 @@ The server is hardened for ngrok exposure:
 - Security headers: CSP, HSTS, X-Frame-Options DENY, no-referrer
 - SSE connection limit (4 max)
 - SSE timeout (20 minutes)
-- `safe_write` validates paths stay within the controllers directory
+- `safe_write` validates paths stay within `allowed_write_paths` (default: `app/controllers`)
 - Process groups for subprocess management (no orphans)
 - Error messages sanitized to strip `RAILS_ROOT` paths
 
@@ -113,6 +113,32 @@ The server is hardened for ngrok exposure:
 morphdom handles this automatically for most cases. Scroll positions, focus, and input values are preserved because morphdom patches elements in-place rather than replacing them. For focused inputs specifically, the `onBeforeElUpdated` callback returns `false` to skip the update entirely.
 
 If you need client-only state (like toggle open/closed), add it to `perController` via `getCtrlState()` — this state persists across SSE-triggered re-renders because it lives in JavaScript, not the DOM.
+
+### Pipeline configuration
+
+`Pipeline.new` accepts keyword arguments to customize discovery, sidecar storage, write permissions, and test path resolution. Defaults preserve the current hardening behavior:
+
+| Option | Default | Purpose |
+|---|---|---|
+| `rails_root` | `"."` | Path to the target Rails app |
+| `sidecar_dir` | `".harden"` | Directory name for sidecar files (created next to each target) |
+| `allowed_write_paths` | `["app/controllers"]` | Directories (relative to `rails_root`) that `safe_write` and `write_sidecar` permit writes to |
+| `discovery_glob` | `"app/controllers/**/*_controller.rb"` | Glob pattern (relative to `rails_root`) for target discovery |
+| `discovery_excludes` | `["application_controller"]` | Basenames (without `.rb`) to skip during discovery |
+| `test_path_resolver` | Default controller→test mapping | Lambda `(target_path, rails_root) → test_path or nil` for deriving test file paths |
+
+Example for a workflow targeting views:
+
+```ruby
+Pipeline.new(
+  rails_root: "/path/to/app",
+  sidecar_dir: ".review",
+  allowed_write_paths: ["app/controllers", "app/views"],
+  discovery_glob: "app/views/**/*.html.erb",
+  discovery_excludes: ["application"],
+  test_path_resolver: ->(path, root) { ... }
+)
+```
 
 ### Testing
 

@@ -28,7 +28,7 @@ class SidecarTest < PipelineTestCase
     path = File.join(escape_dir, "secrets.yml")
 
     err = assert_raises(RuntimeError) { @pipeline.send(:safe_write, path, "secrets") }
-    assert_match(/escapes controllers directory/i, err.message)
+    assert_match(/escapes allowed directories/i, err.message)
     refute File.exist?(path)
   end
 
@@ -41,7 +41,7 @@ class SidecarTest < PipelineTestCase
       FileUtils.touch(path)  # file must exist for dirname realpath
 
       err = assert_raises(RuntimeError) { @pipeline.send(:safe_write, path, "evil") }
-      assert_match(/escapes controllers directory/i, err.message)
+      assert_match(/escapes allowed directories/i, err.message)
     ensure
       FileUtils.rm_rf(outside_dir)
     end
@@ -57,7 +57,7 @@ class SidecarTest < PipelineTestCase
       target_file = File.join(link_path, "evil.rb")
 
       err = assert_raises(RuntimeError) { @pipeline.send(:safe_write, target_file, "evil") }
-      assert_match(/escapes controllers directory/i, err.message)
+      assert_match(/escapes allowed directories/i, err.message)
     ensure
       FileUtils.rm_rf(outside_dir)
     end
@@ -111,5 +111,92 @@ class SidecarTest < PipelineTestCase
 
     result = @pipeline.send(:derive_test_path, ctrl_path)
     assert_equal test_path, result
+  end
+
+  # ── Custom allowed_write_paths tests ───────────────────────
+
+  def test_safe_write_with_custom_allowed_paths_permits_views
+    views_dir = File.join(@tmpdir, "app", "views", "blog")
+    FileUtils.mkdir_p(views_dir)
+    pipeline = Pipeline.new(rails_root: @tmpdir, allowed_write_paths: ["app/controllers", "app/views"])
+
+    path = File.join(views_dir, "index.html.erb")
+    pipeline.send(:safe_write, path, "<h1>Posts</h1>")
+
+    assert_equal "<h1>Posts</h1>", File.read(path)
+  ensure
+    pipeline&.shutdown(timeout: 1) rescue nil
+  end
+
+  def test_safe_write_with_custom_allowed_paths_still_blocks_escape
+    views_dir = File.join(@tmpdir, "app", "views")
+    FileUtils.mkdir_p(views_dir)
+    pipeline = Pipeline.new(rails_root: @tmpdir, allowed_write_paths: ["app/views"])
+
+    err = assert_raises(RuntimeError) { pipeline.send(:safe_write, File.join(@controllers_dir, "evil.rb"), "evil") }
+    assert_match(/escapes allowed directories/i, err.message)
+  ensure
+    pipeline&.shutdown(timeout: 1) rescue nil
+  end
+
+  def test_write_sidecar_with_custom_allowed_paths_permits_views
+    views_dir = File.join(@tmpdir, "app", "views", "blog", "posts")
+    FileUtils.mkdir_p(views_dir)
+    pipeline = Pipeline.new(rails_root: @tmpdir, allowed_write_paths: ["app/views"])
+
+    target = File.join(views_dir, "index.html.erb")
+    File.write(target, "<h1>Posts</h1>")
+    pipeline.send(:ensure_sidecar_dir, target)
+    pipeline.send(:write_sidecar, target, "analysis.json", '{"ok": true}')
+
+    sidecar = File.join(views_dir, ".harden", "index.html.erb", "analysis.json")
+    assert File.exist?(sidecar), "Expected sidecar file at #{sidecar}"
+  ensure
+    pipeline&.shutdown(timeout: 1) rescue nil
+  end
+
+  # ── Custom sidecar_dir tests ───────────────────────────────
+
+  def test_sidecar_path_uses_custom_dir
+    pipeline = Pipeline.new(rails_root: @tmpdir, sidecar_dir: ".review")
+    ctrl_path = File.join(@controllers_dir, "posts_controller.rb")
+
+    result = pipeline.send(:sidecar_path, ctrl_path, "analysis.json")
+    assert_includes result, "/.review/"
+    refute_includes result, "/.harden/"
+  ensure
+    pipeline&.shutdown(timeout: 1) rescue nil
+  end
+
+  def test_ensure_sidecar_dir_creates_custom_dir
+    pipeline = Pipeline.new(rails_root: @tmpdir, sidecar_dir: ".review")
+    ctrl_path = File.join(@controllers_dir, "posts_controller.rb")
+    File.write(ctrl_path, "# stub")
+
+    pipeline.send(:ensure_sidecar_dir, ctrl_path)
+
+    expected_dir = File.join(@controllers_dir, ".review", "posts_controller")
+    assert Dir.exist?(expected_dir), "Expected directory #{expected_dir} to exist"
+  ensure
+    pipeline&.shutdown(timeout: 1) rescue nil
+  end
+
+  # ── Custom test_path_resolver tests ────────────────────────
+
+  def test_custom_test_path_resolver
+    custom_resolver = ->(target_path, rails_root) {
+      File.join(rails_root, "spec", File.basename(target_path).sub(/\.rb\z/, "_spec.rb"))
+    }
+    pipeline = Pipeline.new(rails_root: @tmpdir, test_path_resolver: custom_resolver)
+
+    spec_path = File.join(@tmpdir, "spec", "posts_controller_spec.rb")
+    FileUtils.mkdir_p(File.dirname(spec_path))
+    File.write(spec_path, "# spec")
+
+    ctrl_path = File.join(@controllers_dir, "posts_controller.rb")
+    result = pipeline.send(:derive_test_path, ctrl_path)
+    assert_equal spec_path, result
+  ensure
+    pipeline&.shutdown(timeout: 1) rescue nil
   end
 end

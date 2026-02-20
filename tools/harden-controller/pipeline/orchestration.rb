@@ -7,10 +7,13 @@ class Pipeline
     def discover_controllers
       @mutex.synchronize { @state[:phase] = "discovering" }
 
-      controllers_dir = File.join(@rails_root, "app", "controllers")
-      unless Dir.exist?(controllers_dir)
+      full_glob = File.join(@rails_root, @discovery_glob)
+      # Derive the base directory from the glob (everything before the first wildcard)
+      base_dir = @discovery_glob.split("*").first.chomp("/")
+      base_dir_full = File.join(@rails_root, base_dir)
+      unless Dir.exist?(base_dir_full)
         @mutex.synchronize do
-          add_error("Controllers directory not found: #{controllers_dir}")
+          add_error("Discovery directory not found: #{base_dir_full}")
           @state[:phase] = "ready"
         end
         return
@@ -18,9 +21,9 @@ class Pipeline
 
       discovered = []
 
-      Dir.glob(File.join(controllers_dir, "**", "*_controller.rb")).each do |path|
+      Dir.glob(full_glob).each do |path|
         basename = File.basename(path, ".rb")
-        next if basename == "application_controller"
+        next if @discovery_excludes.include?(basename)
 
         relative = path.sub("#{@rails_root}/", "")
         controller_mtime = File.mtime(path)
@@ -127,7 +130,7 @@ class Pipeline
         raise "Pipeline cancelled" if cancelled?
         parsed = parse_json_response(result)
 
-        ensure_harden_dir(source_path)
+        ensure_sidecar_dir(source_path)
         write_sidecar(source_path, "analysis.json", JSON.pretty_generate(parsed))
 
         @mutex.synchronize do

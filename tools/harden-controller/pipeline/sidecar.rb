@@ -4,37 +4,43 @@ class Pipeline
   module Sidecar
     private
 
-    def sidecar_path(controller_path, filename)
-      File.join(File.dirname(controller_path), ".harden", File.basename(controller_path, ".rb"), filename)
+    def sidecar_path(target_path, filename)
+      File.join(File.dirname(target_path), @sidecar_dir, File.basename(target_path, ".rb"), filename)
     end
 
-    def ensure_harden_dir(controller_path)
-      dir = File.join(File.dirname(controller_path), ".harden", File.basename(controller_path, ".rb"))
+    def ensure_sidecar_dir(target_path)
+      dir = File.join(File.dirname(target_path), @sidecar_dir, File.basename(target_path, ".rb"))
       FileUtils.mkdir_p(dir)
     end
 
-    def write_sidecar(controller_path, filename, content)
-      path = sidecar_path(controller_path, filename)
+    def write_sidecar(target_path, filename, content)
+      path = sidecar_path(target_path, filename)
       real = File.realpath(File.dirname(path))
-      allowed = "#{File.realpath(File.join(@rails_root, "app", "controllers"))}/"
-      raise "Sidecar path #{path} escapes controllers directory" unless real.start_with?(allowed)
+      unless @allowed_write_paths.any? { |p| real.start_with?("#{File.realpath(File.join(@rails_root, p))}/") }
+        raise "Sidecar path #{path} escapes allowed directories"
+      end
       File.write(path, content.end_with?("\n") ? content : "#{content}\n")
     end
 
     def safe_write(path, content)
       real = File.realpath(File.dirname(path))
-      allowed = "#{File.realpath(File.join(@rails_root, "app", "controllers"))}/"
-      raise "Path #{path} escapes controllers directory" unless real.start_with?(allowed)
+      unless @allowed_write_paths.any? { |p| real.start_with?("#{File.realpath(File.join(@rails_root, p))}/") }
+        raise "Path #{path} escapes allowed directories"
+      end
       File.write(path, content)
     end
 
-    def derive_test_path(controller_path)
+    def derive_test_path(target_path)
+      @test_path_resolver.call(target_path, @rails_root)
+    end
+
+    def default_derive_test_path(controller_path, rails_root)
       # app/controllers/blog/posts_controller.rb → test/controllers/blog/posts_controller_test.rb
-      relative = controller_path.sub("#{@rails_root}/", "")
+      relative = controller_path.sub("#{rails_root}/", "")
       test_relative = relative
         .sub(%r{\Aapp/controllers/}, "test/controllers/")
         .sub(/\.rb\z/, "_test.rb")
-      path = File.join(@rails_root, test_relative)
+      path = File.join(rails_root, test_relative)
       File.exist?(path) ? path : nil
     end
   end

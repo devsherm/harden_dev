@@ -76,8 +76,17 @@ class Pipeline
     end
   end
 
-  def initialize(rails_root: ".")
+  def initialize(rails_root: ".", sidecar_dir: ".harden",
+                 allowed_write_paths: ["app/controllers"],
+                 discovery_glob: "app/controllers/**/*_controller.rb",
+                 discovery_excludes: ["application_controller"],
+                 test_path_resolver: nil)
     @rails_root = rails_root
+    @sidecar_dir = sidecar_dir
+    @allowed_write_paths = allowed_write_paths
+    @discovery_glob = discovery_glob
+    @discovery_excludes = discovery_excludes
+    @test_path_resolver = test_path_resolver || method(:default_derive_test_path)
     @mutex = Mutex.new
     @threads = []
     @cancelled = false
