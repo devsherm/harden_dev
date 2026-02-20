@@ -5,7 +5,7 @@
 A standalone Sinatra application that orchestrates parallel `claude -p` calls to analyze, evaluate, and modify Rails controllers through a browser-based UI with human-in-the-loop approval. The pipeline operates in two sequential modes:
 
 1. **Hardening mode** — Security-focused analysis and remediation (authorization, validation, rate limiting). The current pipeline.
-2. **Enhance mode** — Research-driven improvement that adds richer analysis, item extraction, synthesis with impact/effort ratings, audit against prior decisions, human review, intelligent batch planning, and parallel write agents with file-level locking. Automatically entered per-controller when hardening completes.
+2. **Enhance mode** — Research-driven improvement that adds richer analysis, item extraction, synthesis with impact/effort ratings, audit against prior decisions, human review, intelligent batch planning, and parallel write agents with file-level locking. Entered per-controller when the operator starts enhance analysis after hardening completes.
 
 The architecture is task-agnostic — both modes use the same discover-analyze-decide-apply-test-verify structure, but enhance mode inserts research, extraction, synthesis, and audit phases before the human gate, and adds a batch planning phase before apply. Prompts in `prompts.rb` determine what each mode actually does. Designed for a single operator exposed over ngrok.
 
@@ -16,7 +16,7 @@ The architecture is task-agnostic — both modes use the same discover-analyze-d
 | **Pipeline** | The singleton `Pipeline` instance (`$pipeline`) that manages all state, threading, and phase orchestration. One per server process. |
 | **Controller** | A Rails controller file discovered by glob. The unit of analysis, decision-making, and workflow tracking. |
 | **Workflow** | Per-controller state machine tracking progress through pipeline phases. Keyed by controller basename (e.g., `posts_controller`). A workflow progresses through hardening mode first, then enhance mode. |
-| **Phase** | A discrete step in the pipeline: discover, analyze, decide, harden, test, ci_check, verify (hardening mode); e_analyze, research, extract, synthesize, audit, e_decide, batch_plan, apply, e_test, e_ci_check, e_verify (enhance mode). Each phase either calls `claude -p`, runs shell commands, calls the Claude Messages API, or awaits human input. |
+| **Phase** | A discrete step in the pipeline. Hardening mode: discover, analyze, decide, harden, test, ci_check, verify. Enhance mode: e_analyze, e_research, e_extract, e_synthesize, e_audit, e_decide, e_batch_plan, e_apply, e_test, e_ci_check, e_verify. Each phase either calls `claude -p`, runs shell commands, calls the Claude Messages API, or awaits human input. |
 | **Mode** | Either `hardening` or `enhance`. Determines which phase sequence a controller follows. Per-controller — different controllers can be in different modes simultaneously. |
 | **Finding** | A structured analysis result identifying a hardening opportunity (hardening mode). Has severity (high/medium/low), category, scope (controller/module/app), and suggested fix. |
 | **Blocker** | A finding with scope `module` or `app` — requires changes beyond the controller file. Displayed separately in the UI; must be dismissed before hardening proceeds. |
@@ -36,52 +36,54 @@ The architecture is task-agnostic — both modes use the same discover-analyze-d
 
 ### Pipeline Phases
 
+All workflow statuses are prefixed by mode: `h_` for hardening, `e_` for enhance. This makes every status string globally unique and self-documenting — no need to check the `mode` field to interpret a status. Global pipeline phases (`idle`, `discovering`, `ready`) and the shared `error` status are unprefixed.
+
 #### Hardening Mode
 
 ```
-discover → analyze → awaiting_decisions
-  → skip ─────────────────────────────────────────────────────→ skipped
-  → harden → hardened → test → fix_tests (loop)
-      → tested → ci_check → fix_ci (loop)
-          → ci_passed → verify → hardening_complete ──→ [enhance mode]
-      │                   └──→ ci_failed (retry available)
-      └──→ tests_failed (retry available)
+discover → h_analyzing → h_awaiting_decisions
+  → h_skipped ──────────────────────────────────────────────────→ (terminal)
+  → h_hardening → h_hardened → h_testing → h_fixing_tests (loop)
+      → h_tested → h_ci_checking → h_fixing_ci (loop)
+          → h_ci_passed → h_verifying → h_complete ──→ [eligible for enhance mode]
+      │                     └──→ h_ci_failed (retry available)
+      └──→ h_tests_failed (retry available)
 ```
 
-Discovery is global (one pass over the entire `discovery_glob`). All subsequent phases operate per-controller. The phase chain from `harden` through `verify` executes sequentially within a single thread per controller — `run_hardening` calls `run_testing`, which calls `run_ci_checks`, which calls `run_verification`. The `awaiting_decisions` phase is a human gate that breaks this chain.
+Discovery is global (one pass over the entire `discovery_glob`). All subsequent phases operate per-controller. The phase chain from `h_hardening` through `h_verifying` executes sequentially within a single thread per controller — `run_hardening` calls `run_testing`, which calls `run_ci_checks`, which calls `run_verification`. The `h_awaiting_decisions` phase is a human gate that breaks this chain.
 
-When a controller reaches `hardening_complete`, it automatically transitions to enhance mode (beginning at `e_analyze`).
+When a controller reaches `h_complete`, it becomes eligible for enhance mode. The operator starts enhance analysis via the UI — the transition is not automatic.
 
 Intermediate gate statuses control phase sequencing:
 
 | Status | Set by | Guards entry to |
 |---|---|---|
-| `hardened` | `run_hardening` on success | `run_testing` |
-| `tested` | `run_testing` on test pass | `run_ci_checks` |
-| `ci_passed` | `run_ci_checks` on CI pass | `run_verification` |
-| `hardening_complete` | `run_verification` on success | enhance mode entry |
+| `h_hardened` | `run_hardening` on success | `run_testing` |
+| `h_tested` | `run_testing` on test pass | `run_ci_checks` |
+| `h_ci_passed` | `run_ci_checks` on CI pass | `run_verification` |
+| `h_complete` | `run_verification` on success | enhance mode entry (operator-initiated) |
 
 Terminal/retry statuses:
 
 | Status | Meaning | Recovery |
 |---|---|---|
-| `skipped` | Operator chose `skip` decision | Re-analyze |
-| `tests_failed` | Fix loop exhausted `MAX_FIX_ATTEMPTS` | Retry button in UI |
-| `ci_failed` | Fix loop exhausted `MAX_CI_FIX_ATTEMPTS` | Retry button in UI |
+| `h_skipped` | Operator chose `skip` decision | Re-analyze |
+| `h_tests_failed` | Fix loop exhausted `MAX_FIX_ATTEMPTS` | Retry button in UI |
+| `h_ci_failed` | Fix loop exhausted `MAX_CI_FIX_ATTEMPTS` | Retry button in UI |
 
 #### Enhance Mode
 
 ```
-hardening_complete →
-  e_analyze → researching → extracting → synthesizing → auditing →
-  e_awaiting_decisions → planning_batches →
-  [per batch: applying → e_testing/e_fixing_tests → e_ci_checking/e_fixing_ci → e_verifying] →
-  enhance_complete
+h_complete →
+  e_analyzing → e_researching → e_extracting → e_synthesizing → e_auditing →
+  e_awaiting_decisions → e_planning_batches →
+  [per batch: e_applying → e_testing/e_fixing_tests → e_ci_checking/e_fixing_ci → e_verifying → e_batch_complete] →
+  e_enhance_complete
 ```
 
-Enhance mode begins automatically per-controller when hardening completes. The `e_` prefix distinguishes enhance mode statuses from hardening mode statuses in the shared state model.
+Enhance mode is entered per-controller when the operator starts enhance analysis after hardening completes. All enhance statuses use the `e_` prefix.
 
-Enhance mode phases operate at two granularities: phases through `planning_batches` are per-controller; phases from `applying` through `e_verifying` are per-batch. Multiple batches for the same controller may execute in parallel if their write targets don't conflict (mediated by the LockManager).
+Enhance mode phases operate at two granularities: phases through `e_planning_batches` are per-controller; phases from `e_applying` through `e_verifying` are per-batch. Multiple batches for the same controller may execute in parallel if their write targets don't conflict (mediated by the LockManager). The workflow-level status advances to `e_enhance_complete` when all batches reach `e_batch_complete`.
 
 | # | Phase | Granularity | Execution | Write locks | Human | Output |
 |---|---|---|---|---|---|---|
@@ -91,13 +93,13 @@ Enhance mode phases operate at two granularities: phases through `planning_batch
 | E3 | Synthesize | Controller | Parallel | No | No | READY items + ratings |
 | E4 | Audit | Controller | Parallel | No | No | De-duped READY items |
 | E5 | Decide | Controller | — | No | Yes (TODO/DEFER/REJECT) | Approved TODOs |
-| E6 | Batch plan | Controller | Per-controller | No | Yes (review batches) | Batch definitions + write targets |
+| E6 | Batch plan | Controller | Per-controller | No | Yes (accept or reject with notes) | Batch definitions + write targets |
 | E7 | Apply | Batch | Parallel* | Yes | No | Modified files |
 | E8 | Test/fix | Batch | Sequential | Yes (held) | No | Test results |
 | E9 | CI/fix | Batch | Sequential | Yes (held) | No | CI results |
 | E10 | Verify | Batch | Sequential | Yes (held) | No | Verification report |
 
-\* Parallel across batches whose write targets don't conflict. Sequential within a batch (apply → test → ci → verify).
+\* Parallel across batches whose write targets don't conflict. Sequential within a batch (apply → test → ci → verify). The Scheduler dispatches once per batch; the thread runs the full E7→E10 chain with the grant held throughout.
 
 ##### Phase details
 
@@ -107,45 +109,47 @@ Input: controller source, views, routes, related models, hardening verification 
 Output: analysis document + research topic prompts.
 Status: `e_analyzing`
 
-**E1 — Research**: Per controller. For each research topic from analysis, the operator chooses one of:
-1. **Claude API** — send the prompt to the Claude Messages API (text completion, no tool use). The pipeline makes the HTTP call and stores the response.
+**E1 — Research**: Per controller. The `e_researching` status is the human gate for this phase — topics are displayed in the UI and the operator resolves them one at a time. For each research topic from analysis, the operator chooses one of:
+1. **Claude API** — send the prompt to the Claude Messages API with the `web_search_20250305` tool (up to 10 searches per topic). The pipeline makes the HTTP call and stores the response.
 2. **Manual paste** — the operator researches the topic externally (claude.ai, documentation, etc.) and pastes the result into the UI.
 
-Research results are stored per-topic. The phase completes for a controller when all topics have responses. This phase is not dispatched to `claude -p` — it's a gathering phase.
+Research results are stored per-topic. The phase completes for a controller when all topics have responses, automatically advancing to `e_extracting`. This phase is not dispatched to `claude -p` — it's a gathering phase.
 
-Status: `researching`
+Status: `e_researching`
 
 **E2 — Extract**: Per controller. From all research results, generate a list of POSSIBLE actionable items. Uses `claude -p --dangerously-skip-permissions`. Each item is a concrete improvement.
 
 Input: analysis document + all research results.
 Output: POSSIBLE items list.
-Status: `extracting`
+Status: `e_extracting`
 
 **E3 — Synthesize**: Per controller. Compare the current implementation to POSSIBLE items. For each item, determine applicability and rate impact (high/medium/low) and effort (high/medium/low). Items already implemented or not applicable are filtered out. Remaining items become READY.
 
 Input: analysis document + POSSIBLE items + controller source code.
 Output: READY items list with ratings and rationale.
-Status: `synthesizing`
+Status: `e_synthesizing`
 
-**E4 — Audit**: Per controller. Compare READY items against existing deferred and rejected items from prior runs. De-duplicate — rejected items don't reappear unless the operator explicitly re-enables them. Deferred items are flagged but included.
+**E4 — Audit**: Per controller. A `claude -p --dangerously-skip-permissions` call that compares READY items against existing deferred and rejected items from this controller's prior runs. De-duplicate using AI judgment — rejected items don't reappear unless the operator explicitly re-enables them. Deferred items are flagged but included. Prior decisions are stored per-controller in the `.enhance/` sidecar directory.
 
-Input: READY items list + persistent deferred/rejected item store.
+Input: READY items list + this controller's persistent deferred/rejected items.
 Output: de-duped READY items list with prior-decision annotations.
-Status: `auditing`
+Status: `e_auditing`
 
-**E5 — Decide**: Human gate. The operator reviews each READY item and categorizes it: **TODO** (approved), **DEFER** (revisit later, persists), or **REJECT** (not wanted, persists). The operator can also propose new items not surfaced by analysis/research.
+**E5 — Decide**: Human gate. The operator reviews each READY item and categorizes it: **TODO** (approved), **DEFER** (revisit later, persists per-controller), or **REJECT** (not wanted, persists per-controller). The operator can also propose new items not surfaced by analysis/research.
 
 Status: `e_awaiting_decisions`
 
-**E6 — Batch plan**: From approved TODO items, a `claude -p --dangerously-skip-permissions` call proposes execution batches. Batching considers effort (high-effort items get their own batch), file overlap (items touching the same files batch together), and dependencies (dependent items batch together or are ordered). Each batch definition includes the TODO items, `write_targets` (specific file paths), and estimated effort. The operator reviews and can adjust batches before execution starts.
+**E6 — Batch plan**: From approved TODO items, a `claude -p --dangerously-skip-permissions` call proposes execution batches. Batching considers effort (high-effort items get their own batch), file overlap (items touching the same files batch together), and dependencies (dependent items batch together or are ordered). Each batch definition includes the TODO items, `write_targets` (specific file paths), and estimated effort. The operator reviews and either accepts the plan or rejects it with notes (triggering re-planning with the operator's notes as additional context).
 
 Input: approved TODO items + analysis document + controller source code.
 Output: ordered list of batch definitions with write_targets.
-Status: `planning_batches`
+Status: `e_planning_batches`
 
-**E7–E10 — Apply → Test → CI → Verify**: Per batch. Write locks are acquired at the start of E7 and held through E10 completion. These phases use the shared core orchestration (same as hardening's harden/test/ci/verify) with enhance-mode-specific prompts. On completion or error, all locks for the batch are released.
+**E7–E10 — Apply → Test → CI → Verify**: Per batch. The Scheduler dispatches once per batch. The thread acquires write locks at the start of E7 and runs the full apply→test→ci→verify chain sequentially, holding the grant throughout. These phases use the shared core orchestration (same as hardening's harden/test/ci/verify) with enhance-mode-specific prompts. On completion or error, all locks for the batch are released via `ensure` block.
 
-Status per batch: `applying` → `e_testing` / `e_fixing_tests` → `e_ci_checking` / `e_fixing_ci` → `e_verifying` → `enhance_complete`
+Status per batch: `e_applying` → `e_testing` / `e_fixing_tests` → `e_ci_checking` / `e_fixing_ci` → `e_verifying` → `e_batch_complete`
+
+When all batches for a controller reach `e_batch_complete`, the workflow status advances to `e_enhance_complete`.
 
 ### State Model
 
@@ -162,16 +166,16 @@ Workflow entries contain: `name`, `path`, `full_path`, `mode` (`"hardening"` or 
 
 Enhance mode adds to workflow entries: `e_analysis`, `research_topics`, `research_results`, `possible_items`, `ready_items`, `e_decisions`, `batches`, `batch_workflows` (a Hash of per-batch state keyed by batch ID).
 
-Both modes share a single `status` field per workflow. The `mode` field (`"hardening"` or `"enhance"`) tracks which mode is active. The `e_` prefix on enhance statuses prevents ambiguity. `ACTIVE_STATUSES` includes all async statuses from both modes:
+Both modes share a single `status` field per workflow. The `mode` field (`"hardening"` or `"enhance"`) tracks which mode is active. All statuses are prefixed by mode (`h_` or `e_`), making each status globally unique. `ACTIVE_STATUSES` includes all async statuses from both modes:
 
 ```ruby
 ACTIVE_STATUSES = [
   # hardening
-  "analyzing", "hardening", "testing", "fixing_tests",
-  "ci_checking", "fixing_ci", "verifying",
+  "h_analyzing", "h_hardening", "h_testing", "h_fixing_tests",
+  "h_ci_checking", "h_fixing_ci", "h_verifying",
   # enhance
-  "e_analyzing", "researching", "extracting", "synthesizing",
-  "auditing", "planning_batches", "applying", "e_testing",
+  "e_analyzing", "e_researching", "e_extracting", "e_synthesizing",
+  "e_auditing", "e_planning_batches", "e_applying", "e_testing",
   "e_fixing_tests", "e_ci_checking", "e_fixing_ci", "e_verifying"
 ]
 ```
@@ -203,6 +207,7 @@ Ad-hoc questions and finding explanations are tracked in a separate `@queries` i
 - One global `Pipeline` instance with a single `@mutex` guarding `@state`.
 - `safe_thread` wraps `Thread.new` with exception handling — sets workflow to `error` on unhandled exception. Dead threads are pruned on each `safe_thread` call.
 - `@claude_semaphore` (Mutex) + `@claude_slots` (ConditionVariable) limit concurrent `claude -p` calls to `MAX_CLAUDE_CONCURRENCY` (12).
+- `@api_semaphore` (Mutex) + `@api_slots` (ConditionVariable) limit concurrent Claude Messages API calls to `MAX_API_CONCURRENCY` (20). Independent from the CLI semaphore — CLI and API calls have separate pools.
 - `spawn_with_timeout` runs subprocesses in their own process group (`pgroup: true`), sends TERM then KILL on timeout or cancellation.
 - `cancel!` and `cancelled?` read/write a boolean without mutex — atomic under CRuby's GVL.
 
@@ -244,7 +249,7 @@ When paths overlap, the compatibility matrix determines whether the request is b
 - **Timeout-bounded queuing.** Work items wait up to `LOCK_TIMEOUT` seconds (default 300). If the timeout expires, the item stays queued with an incremented retry count. Items exceeding `MAX_LOCK_RETRIES` move to error state.
 - **No lock expansion after dispatch.** Once dispatched, an agent's lock footprint is fixed. If the agent discovers it needs a file it didn't lock, the write is rejected by `safe_write` and the gap is surfaced to the operator. The fix is to refine batch planning prompts, not to weaken enforcement.
 
-**Grant lifecycle:** Grants are held through the entire write lifecycle (apply → test → CI → verify). Released on completion or error. Each grant has a TTL (default 30 minutes) as a safety net — a background reaper releases expired grants.
+**Grant lifecycle:** Grants are held through the entire batch write lifecycle (apply → test → CI → verify) in a single thread. Released on completion or error via `ensure` block. Each grant has a TTL (default 30 minutes) as a safety net — a background reaper releases expired grants.
 
 **Methods:**
 
@@ -317,7 +322,7 @@ active_items -> [WorkItem]
 |---|---|---|
 | `id` | String | Unique identifier |
 | `workflow` | String | Controller name (phases E0-E6) or batch identifier (phases E7-E10) |
-| `phase` | Symbol | `:e_analyze`, `:extract`, `:synthesize`, `:audit`, `:apply`, etc. |
+| `phase` | Symbol | `:e_analyze`, `:e_extract`, `:e_synthesize`, `:e_audit`, `:e_apply`, etc. |
 | `lock_request` | LockRequest | Read and write paths needed |
 | `status` | Symbol | `:queued`, `:dispatched`, `:completed`, `:error` |
 | `queued_at` | Time | When the item entered the queue |
@@ -331,7 +336,7 @@ active_items -> [WorkItem]
 | `read_paths` | Array\<String\> | File and directory paths needing read access |
 | `write_paths` | Array\<String\> | File paths needing write access (no directories) |
 
-**Priority ordering:** Near-completion work first: `e_verify > e_test/e_ci > apply > extract/synthesize/audit > e_analyze`. Starvation prevention: work items waiting longer than 10 minutes receive priority escalation.
+**Priority ordering:** Near-completion work first: `e_verifying > e_testing/e_ci_checking > e_applying > e_extracting/e_synthesizing/e_auditing > e_analyzing`. Starvation prevention: work items waiting longer than 10 minutes receive priority escalation.
 
 **Dispatch loop:**
 
@@ -350,6 +355,8 @@ loop do
 
     item.status = :dispatched
     item.grant_id = grant.id
+    # For batch write phases (E7-E10), runs the full apply→test→ci→verify
+    # chain in a single thread with the grant held throughout.
     safe_thread { run_agent(item, grant) }
   end
 
@@ -383,7 +390,7 @@ Human-gate phases (e_decide, batch_plan review) update state directly on operato
 
 Single-file SPA (`index.html`). No build tools. CDN dependencies: marked (Markdown rendering), DOMPurify (sanitization), morphdom (DOM diffing). The `render()` function builds the full UI as an HTML string, then `morphdom` diffs and patches only what changed — preserving scroll positions, focus state, and input values. Per-controller client-side state (`perController`) tracks finding decisions, dismissed blockers, and open/closed sections; this state is not in the SSE payload.
 
-Enhance mode adds UI for: research topic management (API call vs manual paste), item review (TODO/DEFER/REJECT), batch plan review/adjustment, lock contention visualization, and batch progress tracking.
+Enhance mode adds UI for: research topic management (API call vs manual paste), item review (TODO/DEFER/REJECT), batch plan review (accept or reject with notes for re-planning), lock contention visualization, and batch progress tracking.
 
 ## Code Organization
 
@@ -391,15 +398,15 @@ Enhance mode adds UI for: research topic management (API call vs manual paste), 
 |---|---|
 | `server.rb` | Sinatra routes, authentication, SSE streaming, CORS, CSRF protection, signal handling, startup |
 | `pipeline.rb` | `Pipeline` class definition, constants, `try_transition`, `initialize`, `reset!`, `to_json`, state accessors |
-| `pipeline/orchestration.rb` | Hardening phase logic: `discover_controllers`, `run_analysis`, `load_existing_analysis`, `submit_decision`, `run_hardening`, `run_testing`, `run_ci_checks`, `run_verification`, `ask_question`, `explain_finding` |
-| `pipeline/enhance_orchestration.rb` | Enhance phase logic: `run_enhance_analysis`, `submit_research`, `run_extraction`, `run_synthesis`, `run_audit`, `submit_enhance_decisions`, `run_batch_planning`, `run_batch_apply`, `run_batch_testing`, `run_batch_ci_checks`, `run_batch_verification` |
-| `pipeline/claude_client.rb` | `claude_call` (acquire slot, spawn CLI, release slot), `parse_json_response` (strips markdown fences, extracts JSON from prose), `api_call` (Claude Messages API for research) |
+| `pipeline/orchestration.rb` | Hardening phase logic: `discover_controllers`, `run_analysis`, `load_existing_analysis`, `submit_decision`, `ask_question`, `explain_finding`. Delegates to shared phases for harden/test/ci/verify. |
+| `pipeline/enhance_orchestration.rb` | Enhance phase logic: `run_enhance_analysis`, `submit_research`, `run_extraction`, `run_synthesis`, `run_audit`, `submit_enhance_decisions`, `run_batch_planning`. Delegates to shared phases for batch apply/test/ci/verify. |
+| `pipeline/shared_phases.rb` | Shared core orchestration for apply/test/ci/verify used by both modes. Parameterized by mode-specific prompts, state keys, status names, sidecar config, and optional grant_id. |
+| `pipeline/claude_client.rb` | `claude_call` (acquire CLI slot, spawn CLI, release slot), `parse_json_response` (strips markdown fences, extracts JSON from prose), `api_call` (Claude Messages API with web search for research) |
 | `pipeline/process_management.rb` | `safe_thread`, `cancel!`, `cancelled?`, `shutdown`, `spawn_with_timeout`, `run_all_ci_checks` |
 | `pipeline/sidecar.rb` | `sidecar_path`, `ensure_sidecar_dir`, `write_sidecar`, `safe_write`, `derive_test_path`, `default_derive_test_path` |
 | `pipeline/lock_manager.rb` | `LockManager` class: `try_acquire`, `acquire`, `release`, `check_conflicts`, `active_grants`, grant reaper |
 | `pipeline/scheduler.rb` | `Scheduler` class: `enqueue`, `start`, `stop`, dispatch loop, priority ordering |
-| `pipeline/shared_phases.rb` | Shared core orchestration for apply/test/ci/verify used by both modes with mode-specific prompts |
-| `prompts.rb` | All `claude -p` prompt templates: hardening (`analyze`, `harden`, `fix_tests`, `fix_ci`, `verify`, `ask`, `explain`) and enhance (`e_analyze`, `research`, `extract`, `synthesize`, `batch_plan`, `e_apply`, `e_fix_tests`, `e_fix_ci`, `e_verify`) |
+| `prompts.rb` | All `claude -p` prompt templates: hardening (`analyze`, `harden`, `fix_tests`, `fix_ci`, `verify`, `ask`, `explain`) and enhance (`e_analyze`, `research`, `extract`, `synthesize`, `audit`, `batch_plan`, `e_apply`, `e_fix_tests`, `e_fix_ci`, `e_verify`) |
 | `index.html` | Single-file SPA — all CSS, JS, HTML inline. Two-panel layout (sidebar + detail). SSE-driven rendering via morphdom. |
 | `Gemfile` | Dependencies: sinatra, sinatra-contrib, puma; test group: minitest, rack-test, rake |
 | `Rakefile` | `rake test` — runs all `test/**/*_test.rb` |
@@ -426,15 +433,15 @@ Enhance mode adds UI for: research topic management (API call vs manual paste), 
 | `test/try_transition_test.rb` | `:not_active` guard (no workflow, active, completed, error, unknown), named guards, concurrent transitions |
 | `test/sanitize_error_test.rb` | Rails root replacement, realpath replacement, no-path passthrough, non-string input |
 | `test/enhance_analysis_test.rb` | Enhance analysis happy path, research topic generation, hardening prerequisite check |
-| `test/research_test.rb` | API research path, manual paste, topic completion tracking, API failure recovery |
+| `test/research_test.rb` | API research path (with web search), manual paste, topic completion tracking, API failure recovery |
 | `test/extraction_test.rb` | Item extraction from research results, POSSIBLE item generation |
 | `test/synthesis_test.rb` | Impact/effort rating, filtering already-implemented items, READY item generation |
-| `test/audit_test.rb` | De-duplication against deferred/rejected items, prior-decision annotations |
+| `test/audit_test.rb` | De-duplication via claude -p against per-controller deferred/rejected items, prior-decision annotations |
 | `test/batch_planning_test.rb` | Batch grouping by effort/overlap/dependencies, write target declaration |
-| `test/batch_execution_test.rb` | Batch apply/test/ci/verify with lock grants, shared core orchestration |
+| `test/batch_execution_test.rb` | Batch apply/test/ci/verify with lock grants, shared core orchestration, single-thread full chain |
 | `test/lock_manager_test.rb` | try_acquire, acquire with timeout, release, conflict detection, over-lock rejection, grant TTL reaper |
 | `test/scheduler_test.rb` | Enqueue, dispatch loop, priority ordering, starvation prevention, graceful shutdown |
-| `test/api_call_test.rb` | Claude Messages API integration, concurrency limiting, error handling |
+| `test/api_call_test.rb` | Claude Messages API with web search tool, API semaphore concurrency limiting, response extraction, error handling |
 
 ## Design Decisions
 
@@ -444,7 +451,11 @@ Enhance mode adds UI for: research topic management (API call vs manual paste), 
 
 - **Scheduler-dispatched phases (enhance mode)**: Enhance mode uses the Scheduler for dispatch instead of direct `safe_thread` calls. This enables parallel batch execution across controllers with lock-based conflict resolution. Read-only phases (E0-E4) are dispatched without locks. Write phases (E7-E10) acquire locks before dispatch.
 
-- **Two-mode sequential pipeline**: Hardening is a prerequisite for enhance. This ensures controllers have a baseline security posture before broader improvements begin. The transition is automatic per-controller — when `run_verification` succeeds in hardening mode, the workflow status advances to `e_analyzing`.
+- **Single-thread batch execution**: The Scheduler dispatches once per batch. The dispatched thread runs the full apply→test→ci→verify chain sequentially, holding the grant throughout. This mirrors hardening's sequential chaining and ensures files are not modified between phases within a batch.
+
+- **Two-mode sequential pipeline**: Hardening is a prerequisite for enhance. This ensures controllers have a baseline security posture before broader improvements begin. When `run_verification` succeeds in hardening mode, the workflow status advances to `h_complete`. The operator then starts enhance analysis via the UI — the transition is not automatic.
+
+- **Universal status prefixes (`h_`/`e_`)**: All hardening statuses use the `h_` prefix, all enhance statuses use the `e_` prefix. This makes every status string globally unique and self-documenting. No need to check the `mode` field to interpret a status. Global pipeline phases (`idle`, `discovering`, `ready`) and the shared `error` status remain unprefixed.
 
 - **`try_transition` as the concurrency gate**: Routes call `try_transition` before spawning threads. The guard-and-transition is atomic under mutex, so concurrent requests for the same controller cannot both succeed. The `:not_active` guard checks against `ACTIVE_STATUSES` — any status representing async work in progress.
 
@@ -474,17 +485,19 @@ Enhance mode adds UI for: research topic management (API call vs manual paste), 
 
 - **CI checks run in parallel threads**: `run_all_ci_checks` spawns one thread per CI check (rubocop, brakeman, bundler-audit, importmap-audit) and joins all. If any thread raises, the others are killed and joined before re-raising.
 
-- **Fix loops are bounded**: Test fixes and CI fixes each have a maximum retry count (`MAX_FIX_ATTEMPTS` = 2, `MAX_CI_FIX_ATTEMPTS` = 2). If fixes do not resolve failures within the limit, the workflow enters `tests_failed` or `ci_failed` status with a retry button in the UI.
+- **Fix loops are bounded**: Test fixes and CI fixes each have a maximum retry count (`MAX_FIX_ATTEMPTS` = 2, `MAX_CI_FIX_ATTEMPTS` = 2). If fixes do not resolve failures within the limit, the workflow enters `h_tests_failed` or `h_ci_failed` status with a retry button in the UI.
 
 - **Sidecar files enable resumability**: Discovery scans for existing sidecar files and exposes their presence and timestamps. Hardening sidecars (`.harden/`) store analysis, hardened code, test results, CI results, and verification. Enhance sidecars (`.enhance/`) store analysis, research, items, decisions, batches, and per-batch results. The frontend offers "Use Existing" to load a prior analysis without re-running claude.
 
-- **Shared core orchestration for write phases**: Apply/test/ci/verify logic is extracted into shared helpers that both hardening and enhance modes call with different prompts and state keys. This avoids duplication while keeping the modes' prompt templates and sidecar formats independent.
+- **Shared core orchestration for write phases**: Apply/test/ci/verify logic is extracted from hardening's orchestration into shared helpers in `shared_phases.rb`. Both hardening and enhance modes call these shared helpers with mode-specific parameters: prompts, state keys, status names, sidecar configuration, and optional grant_id. This avoids duplication while keeping the modes' prompt templates and sidecar formats independent.
 
 - **LockManager uses all-or-nothing acquisition**: Deadlock prevention without lock ordering. A work item requests all needed paths at once — either all are granted or none. Combined with the Scheduler's dispatch loop, this ensures no hold-and-wait condition.
 
 - **Grant TTL as safety net**: Each grant expires after 30 minutes. A background reaper releases expired grants. This handles edge cases where a thread dies without releasing (e.g., `Thread.kill` from signal handler). Normal operation releases grants explicitly via `ensure` blocks.
 
-- **Research via Messages API, not `claude -p`**: Research prompts may benefit from web access, but `--dangerously-skip-permissions` would bypass all tool permissions. The Claude Messages API provides text completion without tool use, which is what research needs. A separate concurrency limit (`MAX_API_CONCURRENCY` = 20) keeps API calls from starving CLI calls.
+- **Research via Messages API with web search**: Research topics benefit from current web information. The Claude Messages API is called with the `web_search_20250305` tool (up to 10 searches per topic), enabling the model to gather current documentation, best practices, and examples. A separate concurrency limit (`MAX_API_CONCURRENCY` = 20, enforced by `@api_semaphore` + `@api_slots`) keeps API calls from starving CLI calls. The API response includes web search tool results that must be extracted and aggregated into the final research output.
+
+- **`reset!` clears in-memory state only**: `reset!` clears all workflows, threads, LockManager grants, and Scheduler queue, but preserves sidecar files (both `.harden/` and `.enhance/`). On re-discovery, sidecars enable resume to the last completed phase.
 
 - **`shutdownServer()` uses `innerHTML`**: This is intentional — it is a terminal state with no further renders. Converting to morphdom would add complexity with no benefit.
 
@@ -533,7 +546,7 @@ The path allowlist and grant coverage serve as independent safety layers: the al
 `try_transition` enforces two guard types:
 
 - **`:not_active`** — succeeds if no workflow exists for the controller, or if the existing workflow's status is not in `ACTIVE_STATUSES`. Creates or resets the workflow. Prevents double-starts.
-- **Named guard** (e.g., `"awaiting_decisions"`, `"hardening_complete"`) — succeeds only if the workflow's current status exactly matches the guard string. Used for phase-specific transitions (e.g., decisions can only be submitted when status is `awaiting_decisions`; enhance analysis can only start when status is `hardening_complete`).
+- **Named guard** (e.g., `"h_awaiting_decisions"`, `"h_complete"`) — succeeds only if the workflow's current status exactly matches the guard string. Used for phase-specific transitions (e.g., decisions can only be submitted when status is `h_awaiting_decisions`; enhance analysis can only start when status is `h_complete`).
 
 Both guards operate atomically under `@mutex`. On success, the status is updated and error is cleared. On failure, a descriptive error string is returned.
 
@@ -542,7 +555,7 @@ Both guards operate atomically under `@mutex`. On success, the status is updated
 ### External Dependencies
 
 - **`claude` CLI**: All automated phases invoke `claude -p <prompt>` via `spawn_with_timeout`. The CLI must be installed and authenticated. Concurrent calls are bounded by `MAX_CLAUDE_CONCURRENCY` (12).
-- **Claude Messages API**: Research phase (enhance mode) uses the Messages API for text completion. Requires `ANTHROPIC_API_KEY`. Concurrent calls are bounded by `MAX_API_CONCURRENCY` (20). Interface: `api_call(prompt, model: "claude-sonnet-4-6") -> String`.
+- **Claude Messages API**: Research phase (enhance mode) uses the Messages API with the `web_search_20250305` tool for web-augmented research. Requires `ANTHROPIC_API_KEY`. Concurrent calls are bounded by `MAX_API_CONCURRENCY` (20), enforced by a separate `@api_semaphore` + `@api_slots` pair. Interface: `api_call(prompt, model: "claude-sonnet-4-6") -> String` (extracts text from web search tool results).
 - **Rails test runner**: `bin/rails test [file]` for test execution. Falls back to full suite if no controller-specific test file exists.
 - **CI tools**: RuboCop (`bin/rubocop`), Brakeman (`bin/brakeman`), bundler-audit (`bin/bundler-audit`), importmap audit (`bin/importmap audit`). All run via `spawn_with_timeout` with `chdir` set to `rails_root`.
 - **CDN libraries** (frontend): marked 15.0.7, DOMPurify 3.2.5, morphdom 2.7.4 — loaded with SRI integrity hashes.
@@ -568,62 +581,63 @@ Both guards operate atomically under `@mutex`. On success, the status is updated
 | GET | `/pipeline/status` | JSON state snapshot |
 | POST | `/pipeline/analyze` | Start hardening analysis for a controller |
 | POST | `/pipeline/load-analysis` | Load existing hardening analysis from sidecar |
-| POST | `/pipeline/reset` | Reset pipeline and re-discover |
+| POST | `/pipeline/reset` | Reset pipeline and re-discover (clears in-memory state, preserves sidecars) |
 | POST | `/decisions` | Submit hardening finding decisions for a controller |
 | POST | `/ask` | Ad-hoc question about a controller |
 | POST | `/explain/:finding_id` | Explain a specific finding |
-| POST | `/pipeline/retry-tests` | Retry testing from `tests_failed` |
-| POST | `/pipeline/retry-ci` | Retry CI from `ci_failed` |
+| POST | `/pipeline/retry-tests` | Retry testing from `h_tests_failed` |
+| POST | `/pipeline/retry-ci` | Retry CI from `h_ci_failed` |
 | POST | `/pipeline/retry` | Retry from `error` (re-runs analysis) |
 | POST | `/shutdown` | Graceful server shutdown |
 | GET | `/events` | SSE stream of pipeline state |
 | GET | `/pipeline/:name/prompts/:phase` | Retrieve stored prompt for debugging (phase must be in `VALID_PROMPT_PHASES`) |
-| POST | `/enhance/analyze` | Start enhance analysis for a controller (requires `hardening_complete`) |
-| POST | `/enhance/research` | Submit research result (API or manual paste) for a topic |
-| POST | `/enhance/research/api` | Trigger Claude API research for a topic |
+| POST | `/enhance/analyze` | Start enhance analysis for a controller (requires `h_complete`) |
+| POST | `/enhance/research` | Submit research result (manual paste) for a topic |
+| POST | `/enhance/research/api` | Trigger Claude API research (with web search) for a topic |
 | POST | `/enhance/decisions` | Submit enhance item decisions (TODO/DEFER/REJECT) |
 | POST | `/enhance/batches/approve` | Approve batch plan and start execution |
-| POST | `/enhance/batches/adjust` | Modify batch plan (move items, split/merge) |
+| POST | `/enhance/batches/replan` | Reject batch plan with notes, triggering re-planning |
 | POST | `/enhance/retry-tests` | Retry batch testing from `e_testing` failure |
 | POST | `/enhance/retry-ci` | Retry batch CI from `e_ci_checking` failure |
 | GET | `/enhance/locks` | Current lock state and queue depth |
 
 ### Persistence (Enhance Mode)
 
-Each enhance phase writes structured output to the `.enhance/` sidecar directory:
+Each enhance phase writes structured output to the `.enhance/` sidecar directory adjacent to the target controller (same pattern as `.harden/`):
 
 ```
-.enhance/
-  <controller_name>/
-    analysis.json          # E0 output
-    research/
-      <topic_slug>.md      # E1 output (one file per topic)
-    extract.json           # E2 output
-    synthesize.json        # E3 output
-    audit.json             # E4 output
-    decisions.json         # E5 output
-    batches.json           # E6 output
-    batches/
-      <batch_id>/
-        apply.json         # E7 output
-        test_results.json  # E8 output
-        ci_results.json    # E9 output
-        verification.json  # E10 output
+# Adjacent to each controller file, e.g.:
+# app/controllers/.enhance/posts_controller/
+.enhance/<controller_name>/
+  analysis.json          # E0 output
+  research/
+    <topic_slug>.md      # E1 output (one file per topic)
+  extract.json           # E2 output
+  synthesize.json        # E3 output
+  audit.json             # E4 output
+  decisions.json         # E5 output
   decisions/
-    deferred.json          # Cross-run: all deferred items across all controllers
-    rejected.json          # Cross-run: all rejected items across all controllers
+    deferred.json        # Per-controller: deferred items from prior runs
+    rejected.json        # Per-controller: rejected items from prior runs
+  batches.json           # E6 output
+  batches/
+    <batch_id>/
+      apply.json         # E7 output
+      test_results.json  # E8 output
+      ci_results.json    # E9 output
+      verification.json  # E10 output
 ```
 
 **Resume on restart:** On discovery, the pipeline scans both `.harden/` and `.enhance/` sidecar directories. For each controller, it determines the last completed phase by checking which output files exist and sets the workflow status accordingly.
 
 Resume rules:
-- If `.harden/verification.json` exists → status is `hardening_complete` (ready for enhance).
-- If `.enhance/analysis.json` exists but `research/` is incomplete → status is `researching`.
-- If `.enhance/decisions.json` exists but `batches.json` does not → status is `planning_batches`.
+- If `.harden/verification.json` exists → status is `h_complete` (eligible for enhance).
+- If `.enhance/analysis.json` exists but `research/` is incomplete → status is `e_researching`.
+- If `.enhance/decisions.json` exists but `batches.json` does not → status is `e_planning_batches`.
 - If a batch's `apply.json` exists but `test_results.json` does not → that batch resumes at testing.
-- Deferred and rejected items in `.enhance/decisions/` are loaded at startup for the audit phase.
+- Deferred and rejected items in each controller's `.enhance/decisions/` are loaded at startup for the audit phase.
 
-**Cross-run persistence:** `decisions/deferred.json` and `decisions/rejected.json` persist across runs. Each entry includes item description, controller name, decision, timestamp, and optional operator notes.
+**Per-controller persistence:** `decisions/deferred.json` and `decisions/rejected.json` are scoped to each controller's `.enhance/` sidecar directory. Each entry includes item description, decision, timestamp, and optional operator notes. The audit phase (E4) only checks against the same controller's prior decisions.
 
 ### Pipeline Configuration
 
@@ -656,7 +670,7 @@ Pipeline.new(
 ### Hardening Mode
 
 - **Agent crash**: `safe_thread` catches exceptions and sets workflow status to `error`. Retry button in UI re-runs analysis.
-- **Test/CI fix loop exhaustion**: Workflow enters `tests_failed` or `ci_failed`. Retry button available.
+- **Test/CI fix loop exhaustion**: Workflow enters `h_tests_failed` or `h_ci_failed`. Retry button available.
 
 ### Enhance Mode
 
