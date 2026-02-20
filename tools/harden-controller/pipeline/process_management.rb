@@ -106,7 +106,11 @@ class Pipeline
       end
       results = ci_threads.map { |t| t.value rescue $! }
       first_error = results.find { |r| r.is_a?(Exception) }
-      raise first_error if first_error
+      if first_error
+        ci_threads.each { |t| t.kill if t.alive? }
+        ci_threads.each { |t| t.join(2) }
+        raise first_error
+      end
       results
     end
   end

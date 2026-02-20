@@ -46,6 +46,7 @@ end
 
 # ── Rate limiting for /auth ─────────────────────────────────
 AUTH_ATTEMPTS = {}  # ip => { count:, first_at: }
+AUTH_MUTEX = Mutex.new
 AUTH_MAX_ATTEMPTS = 5
 AUTH_WINDOW = 900  # 15 minutes
 AUTH_MAX_TRACKED_IPS = 10_000
@@ -86,9 +87,11 @@ before do
   end
 
   # ── Rate-limit bookkeeping: prune expired entries if over cap ──
-  if AUTH_ATTEMPTS.size > AUTH_MAX_TRACKED_IPS
-    now_rl = Time.now.to_i
-    AUTH_ATTEMPTS.delete_if { |_, v| (now_rl - v[:first_at]) >= AUTH_WINDOW }
+  AUTH_MUTEX.synchronize do
+    if AUTH_ATTEMPTS.size > AUTH_MAX_TRACKED_IPS
+      now_rl = Time.now.to_i
+      AUTH_ATTEMPTS.delete_if { |_, v| (now_rl - v[:first_at]) >= AUTH_WINDOW }
+    end
   end
 
   # ── Passcode auth gate ──────────────────────────────────
@@ -204,30 +207,35 @@ post "/auth" do
   ip = client_ip
 
   # ── Rate limiting ───────────────────────────────────────
-  attempt = AUTH_ATTEMPTS[ip]
-  if attempt && attempt[:count] >= AUTH_MAX_ATTEMPTS && (Time.now.to_i - attempt[:first_at]) < AUTH_WINDOW
-    halt 429, { "Content-Type" => "text/html" }, login_page.sub(
-      "</form>",
-      '<div class="error">Too many attempts. Try again later.</div></form>'
-    )
+  AUTH_MUTEX.synchronize do
+    attempt = AUTH_ATTEMPTS[ip]
+    if attempt && attempt[:count] >= AUTH_MAX_ATTEMPTS && (Time.now.to_i - attempt[:first_at]) < AUTH_WINDOW
+      halt 429, { "Content-Type" => "text/html" }, login_page.sub(
+        "</form>",
+        '<div class="error">Too many attempts. Try again later.</div></form>'
+      )
+    end
   end
 
   if HardenAuth.passcode && Rack::Utils.secure_compare(params["passcode"].to_s, HardenAuth.passcode)
-    AUTH_ATTEMPTS.delete(ip)
+    AUTH_MUTEX.synchronize { AUTH_ATTEMPTS.delete(ip) }
     env["rack.session.options"][:renew] = true   # regenerate session ID (prevent fixation)
     session[:authenticated] = true
     redirect "/"
   elsif HardenAuth.passcode.nil?
     redirect "/"
   else
-    now = Time.now.to_i
-    if attempt.nil? || (now - attempt[:first_at]) >= AUTH_WINDOW
-      AUTH_ATTEMPTS[ip] = { count: 1, first_at: now }
-    else
-      attempt[:count] += 1
+    AUTH_MUTEX.synchronize do
+      now = Time.now.to_i
+      attempt = AUTH_ATTEMPTS[ip]
+      if attempt.nil? || (now - attempt[:first_at]) >= AUTH_WINDOW
+        AUTH_ATTEMPTS[ip] = { count: 1, first_at: now }
+      else
+        attempt[:count] += 1
+      end
+      # Prune expired entries to prevent memory growth
+      AUTH_ATTEMPTS.delete_if { |_, v| (now - v[:first_at]) >= AUTH_WINDOW }
     end
-    # Prune expired entries to prevent memory growth
-    AUTH_ATTEMPTS.delete_if { |_, v| (now - v[:first_at]) >= AUTH_WINDOW }
 
     halt 401, { "Content-Type" => "text/html" }, login_page.sub(
       "</form>",
@@ -303,8 +311,11 @@ get "/pipeline/status" do
 end
 
 # Retrieve prompt for a specific controller and phase
+VALID_PROMPT_PHASES = %w[analyze harden fix_tests fix_ci verify].freeze
+
 get "/pipeline/:name/prompts/:phase" do
   content_type :json
+  halt 400, { error: "Invalid phase" }.to_json unless VALID_PROMPT_PHASES.include?(params[:phase])
   prompt = $pipeline.get_prompt(params[:name], params[:phase].to_sym)
   halt 404, { error: "No prompt found" }.to_json unless prompt
   { controller: params[:name], phase: params[:phase], prompt: prompt }.to_json
@@ -313,6 +324,9 @@ end
 # ── SSE Stream ───────────────────────────────────────────────
 
 SSE_TIMEOUT = 1200  # 20 minutes
+# With Puma's default 5 threads, 4 SSE connections consume 80% of capacity.
+# If bumping this limit, also increase Puma's thread count accordingly.
+# Passcode auth limits this to a single operator, so 4 is sufficient.
 SSE_MAX_CONNECTIONS = 4
 $sse_connections = Mutex.new
 $sse_count = 0
@@ -385,6 +399,9 @@ post "/ask" do
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
   result = $pipeline.ask_question(controller, question)
+  if result[:error]
+    halt 422, result.to_json
+  end
   status 202
   result.to_json
 end
@@ -398,6 +415,9 @@ post "/explain/:finding_id" do
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
   result = $pipeline.explain_finding(controller, finding_id)
+  if result[:error]
+    halt 422, result.to_json
+  end
   status 202
   result.to_json
 end

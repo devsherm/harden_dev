@@ -619,8 +619,12 @@
       const es = new EventSource('/events');
       es.onmessage = (e) => {
         sseBackoff = 2000;
-        pipeline = JSON.parse(e.data);
-        render();
+        try {
+          pipeline = JSON.parse(e.data);
+          render();
+        } catch (err) {
+          console.warn('SSE parse error:', err);
+        }
       };
       es.onerror = () => {
         es.close();

@@ -80,18 +80,6 @@ class PipelineAnalysisTest < OrchestrationTestCase
     assert_match(/cancelled/i, wf[:error])
   end
 
-  def test_select_controller_creates_workflow_and_analyzes
-    # Do NOT seed_workflow — select_controller creates it
-    stub_claude_call(analysis_fixture)
-
-    @pipeline.select_controller(@ctrl_name)
-
-    wf = workflow_state(@ctrl_name)
-    assert wf, "Workflow should exist after select_controller"
-    assert_equal "awaiting_decisions", wf[:status]
-    assert_equal 2, wf[:analysis]["findings"].length
-  end
-
   def test_load_existing_analysis_from_sidecar
     # Write a sidecar file directly
     sidecar_dir = File.join(File.dirname(@ctrl_path), ".harden", @ctrl_name)

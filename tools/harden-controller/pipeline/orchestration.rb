@@ -90,14 +90,6 @@ class Pipeline
 
     # ── Selection / Analysis ─────────────────────────────────────
 
-    def select_controller(name)
-      entry = find_controller(name)
-      @mutex.synchronize do
-        @state[:workflows][name] = build_workflow(entry)
-      end
-      run_analysis(name)
-    end
-
     def load_existing_analysis(name)
       entry = find_controller(name)
 
@@ -460,7 +452,7 @@ class Pipeline
         source_path = workflow[:full_path]
         ctrl_name = workflow[:name]
         original_source = workflow[:original_source]
-        hardened_source = workflow.dig(:hardened, "hardened_source") || ""
+        hardened_source = File.read(source_path)
         analysis_json = workflow[:analysis].to_json
       end
 

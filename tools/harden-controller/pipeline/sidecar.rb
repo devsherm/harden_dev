@@ -15,6 +15,9 @@ class Pipeline
 
     def write_sidecar(controller_path, filename, content)
       path = sidecar_path(controller_path, filename)
+      real = File.realpath(File.dirname(path))
+      allowed = File.realpath(File.join(@rails_root, "app", "controllers"))
+      raise "Sidecar path #{path} escapes controllers directory" unless real.start_with?(allowed)
       File.write(path, content.end_with?("\n") ? content : "#{content}\n")
     end
 

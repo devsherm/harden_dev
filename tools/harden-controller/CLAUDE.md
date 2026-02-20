@@ -80,7 +80,7 @@ Single-file SPA. No build tools. CDN dependencies: marked (Markdown), DOMPurify 
 - **`shutdownServer()` uses `innerHTML`**: This is intentional. It's a terminal state — no further renders happen after it. Using `innerHTML` here is correct and clear. Don't convert it to `morphdom`.
 - **`escapeHtml()` uses `innerHTML`**: This is a utility function operating on a detached div. Not part of the render pipeline.
 - **`cancel!` / `cancelled?` have no mutex**: These read/write a boolean, which is atomic under CRuby's GVL. This is documented in the code.
-- **`AUTH_ATTEMPTS` is a plain Hash, not thread-safe**: Acceptable because Sinatra's request handling is single-threaded in the default configuration. The hash is only accessed from request handlers, never from pipeline threads.
+- **`AUTH_ATTEMPTS` is guarded by `AUTH_MUTEX`**: All reads and writes are wrapped in `AUTH_MUTEX.synchronize` blocks to ensure thread-safe access under Puma's multi-threaded worker pool.
 - **No CSRF token**: CSRF protection uses the `X-Requested-With: XMLHttpRequest` header check instead of tokens. This works because the SPA makes all state-changing requests via `fetch()` which attaches the header, and the Same-Origin Policy prevents cross-origin `fetch` from setting custom headers.
 
 ### Server hardening (already applied)
