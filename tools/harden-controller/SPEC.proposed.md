@@ -5,7 +5,7 @@
 A standalone Sinatra application that orchestrates parallel `claude -p` calls to analyze, evaluate, and modify Rails controllers through a browser-based UI with human-in-the-loop approval. The pipeline operates in two sequential modes:
 
 1. **Hardening mode** — Security-focused analysis and remediation (authorization, validation, rate limiting). The current pipeline.
-2. **Enhance mode** — Research-driven improvement that adds richer analysis, item extraction, synthesis with impact/effort ratings, audit against prior decisions, human review, intelligent batch planning, and parallel write agents with file-level locking. Entered per-controller when the operator starts enhance analysis after hardening completes.
+2. **Enhance mode** — Research-driven improvement that adds richer analysis, item extraction, synthesis with impact/effort ratings, audit against prior decisions, human review, intelligent batch planning, and sequential batch execution with cross-controller file-level locking. Entered per-controller when the operator starts enhance analysis after hardening completes.
 
 The architecture is task-agnostic — both modes use the same discover-analyze-decide-apply-test-verify structure, but enhance mode inserts research, extraction, synthesis, and audit phases before the human gate, and adds a batch planning phase before apply. Prompts in `prompts.rb` determine what each mode actually does. Designed for a single operator exposed over ngrok.
 
@@ -76,14 +76,14 @@ Terminal/retry statuses:
 ```
 h_complete →
   e_analyzing → e_researching → e_extracting → e_synthesizing → e_auditing →
-  e_awaiting_decisions → e_planning_batches →
-  [per batch: e_applying → e_testing/e_fixing_tests → e_ci_checking/e_fixing_ci → e_verifying → e_batch_complete] →
+  e_awaiting_decisions → e_planning_batches → e_awaiting_batch_approval →
+  [per batch, sequential: e_applying → e_testing/e_fixing_tests → e_ci_checking/e_fixing_ci → e_verifying → e_batch_complete] →
   e_enhance_complete
 ```
 
 Enhance mode is entered per-controller when the operator starts enhance analysis after hardening completes. All enhance statuses use the `e_` prefix.
 
-Enhance mode phases operate at two granularities: phases through `e_planning_batches` are per-controller; phases from `e_applying` through `e_verifying` are per-batch. Multiple batches for the same controller may execute in parallel if their write targets don't conflict (mediated by the LockManager). The workflow-level status advances to `e_enhance_complete` when all batches reach `e_batch_complete`.
+Enhance mode phases operate at two granularities: phases through `e_awaiting_batch_approval` are per-controller; phases from `e_applying` through `e_verifying` are per-batch. Within a controller, batches execute sequentially — one batch completes the full E7→E10 chain before the next begins. Across controllers, enhance work runs in parallel: different controllers' batches can execute concurrently, with the LockManager mediating access to shared resources (e.g., shared partials, migrations, schema). The workflow tracks the active batch via `current_batch_id` and advances to `e_enhance_complete` when the last batch reaches `e_batch_complete`.
 
 | # | Phase | Granularity | Execution | Write locks | Human | Output |
 |---|---|---|---|---|---|---|
@@ -94,12 +94,12 @@ Enhance mode phases operate at two granularities: phases through `e_planning_bat
 | E4 | Audit | Controller | Parallel | No | No | De-duped READY items |
 | E5 | Decide | Controller | — | No | Yes (TODO/DEFER/REJECT) | Approved TODOs |
 | E6 | Batch plan | Controller | Per-controller | No | Yes (accept or reject with notes) | Batch definitions + write targets |
-| E7 | Apply | Batch | Parallel* | Yes | No | Modified files |
+| E7 | Apply | Batch | Sequential* | Yes | No | Modified files |
 | E8 | Test/fix | Batch | Sequential | Yes (held) | No | Test results |
 | E9 | CI/fix | Batch | Sequential | Yes (held) | No | CI results |
 | E10 | Verify | Batch | Sequential | Yes (held) | No | Verification report |
 
-\* Parallel across batches whose write targets don't conflict. Sequential within a batch (apply → test → ci → verify). The Scheduler dispatches once per batch; the thread runs the full E7→E10 chain with the grant held throughout.
+\* Sequential within a controller — one batch completes E7→E10 before the next begins. Parallel across controllers — different controllers' batches can run concurrently, with the LockManager mediating shared resource access. The Scheduler dispatches once per batch; the thread runs the full E7→E10 chain with the grant held throughout.
 
 ##### Phase details
 
@@ -123,7 +123,7 @@ Input: analysis document + all research results.
 Output: POSSIBLE items list.
 Status: `e_extracting`
 
-**E3 — Synthesize**: Per controller. Compare the current implementation to POSSIBLE items. For each item, determine applicability and rate impact (high/medium/low) and effort (high/medium/low). Items already implemented or not applicable are filtered out. Remaining items become READY.
+**E3 — Synthesize**: Per controller. Compare the current implementation to POSSIBLE items. Uses `claude -p --dangerously-skip-permissions`. For each item, determine applicability and rate impact (high/medium/low) and effort (high/medium/low). Items already implemented or not applicable are filtered out. Remaining items become READY.
 
 Input: analysis document + POSSIBLE items + controller source code.
 Output: READY items list with ratings and rationale.
@@ -143,13 +143,11 @@ Status: `e_awaiting_decisions`
 
 Input: approved TODO items + analysis document + controller source code.
 Output: ordered list of batch definitions with write_targets.
-Status: `e_planning_batches`
+Status: `e_planning_batches` (AI call) → `e_awaiting_batch_approval` (human gate, not in ACTIVE_STATUSES). Follows the same pattern as `h_analyzing` → `h_awaiting_decisions`.
 
-**E7–E10 — Apply → Test → CI → Verify**: Per batch. The Scheduler dispatches once per batch. The thread acquires write locks at the start of E7 and runs the full apply→test→ci→verify chain sequentially, holding the grant throughout. These phases use the shared core orchestration (same as hardening's harden/test/ci/verify) with enhance-mode-specific prompts. On completion or error, all locks for the batch are released via `ensure` block.
+**E7–E10 — Apply → Test → CI → Verify**: Per batch, sequential within a controller. The Scheduler dispatches one batch at a time per controller. The thread acquires write locks at the start of E7 and runs the full apply→test→ci→verify chain sequentially, holding the grant throughout. These phases use the shared core orchestration (same as hardening's harden/test/ci/verify) with enhance-mode-specific prompts. On completion or error, all locks for the batch are released via `ensure` block. Different controllers' batches can execute concurrently — the LockManager mediates shared resource access.
 
-Status per batch: `e_applying` → `e_testing` / `e_fixing_tests` → `e_ci_checking` / `e_fixing_ci` → `e_verifying` → `e_batch_complete`
-
-When all batches for a controller reach `e_batch_complete`, the workflow status advances to `e_enhance_complete`.
+The workflow's `current_batch_id` tracks which batch is active. The workflow `status` reflects the current batch's phase: `e_applying` → `e_testing` / `e_fixing_tests` → `e_ci_checking` / `e_fixing_ci` → `e_verifying` → `e_batch_complete`. When a batch reaches `e_batch_complete`, the next batch begins (advancing `current_batch_id`). When the last batch completes, the workflow status advances to `e_enhance_complete`.
 
 ### State Model
 
@@ -164,7 +162,7 @@ All state lives in `@state` (a Hash), accessed exclusively through `@mutex.synch
 
 Workflow entries contain: `name`, `path`, `full_path`, `mode` (`"hardening"` or `"enhance"`), `status`, `analysis`, `decision`, `hardened`, `test_results`, `ci_results`, `verification`, `error`, `started_at`, `completed_at`, `original_source`.
 
-Enhance mode adds to workflow entries: `e_analysis`, `research_topics`, `research_results`, `possible_items`, `ready_items`, `e_decisions`, `batches`, `batch_workflows` (a Hash of per-batch state keyed by batch ID).
+Enhance mode adds to workflow entries: `e_analysis`, `research_topics`, `research_results`, `possible_items`, `ready_items`, `e_decisions`, `batches`, `current_batch_id` (the batch currently executing, or nil).
 
 Both modes share a single `status` field per workflow. The `mode` field (`"hardening"` or `"enhance"`) tracks which mode is active. All statuses are prefixed by mode (`h_` or `e_`), making each status globally unique. `ACTIVE_STATUSES` includes all async statuses from both modes:
 
@@ -289,7 +287,7 @@ active_grants -> [GrantSnapshot]
 |---|---|---|---|
 | **App** | Shared across all modules | High — blocks all agents needing the same file | `app/controllers/concerns/authentication.rb`, `app/views/layouts/application.html.erb` |
 | **Module** | Shared within a module | Moderate — blocks agents within the same module | `app/models/blog/post.rb`, module-shared partials and services |
-| **Controller** | Private to one controller | Low — only that controller's batches contend | Controller file, its views, its tests, its services |
+| **Controller** | Private to one controller | None — no cross-controller contention | Controller file, its views, its tests, its services |
 
 Rules: categorize by most specific consumer, promote only when a consumer in a different controller appears. Batch planning should identify specific files not broad directories. Shared files are read-heavy write-rare.
 
@@ -384,7 +382,7 @@ post '/enhance/analyze/:controller' do
 end
 ```
 
-Human-gate phases (e_decide, batch_plan review) update state directly on operator action without the Scheduler.
+Human-gate phases (`e_awaiting_decisions`, `e_awaiting_batch_approval`) update state directly on operator action without the Scheduler.
 
 ### Frontend
 
@@ -438,7 +436,7 @@ Enhance mode adds UI for: research topic management (API call vs manual paste), 
 | `test/synthesis_test.rb` | Impact/effort rating, filtering already-implemented items, READY item generation |
 | `test/audit_test.rb` | De-duplication via claude -p against per-controller deferred/rejected items, prior-decision annotations |
 | `test/batch_planning_test.rb` | Batch grouping by effort/overlap/dependencies, write target declaration |
-| `test/batch_execution_test.rb` | Batch apply/test/ci/verify with lock grants, shared core orchestration, single-thread full chain |
+| `test/batch_execution_test.rb` | Batch apply/test/ci/verify with lock grants, shared core orchestration, sequential batch chain, current_batch_id tracking |
 | `test/lock_manager_test.rb` | try_acquire, acquire with timeout, release, conflict detection, over-lock rejection, grant TTL reaper |
 | `test/scheduler_test.rb` | Enqueue, dispatch loop, priority ordering, starvation prevention, graceful shutdown |
 | `test/api_call_test.rb` | Claude Messages API with web search tool, API semaphore concurrency limiting, response extraction, error handling |
@@ -449,9 +447,9 @@ Enhance mode adds UI for: research topic management (API call vs manual paste), 
 
 - **Sequential phase chaining within a thread (hardening mode)**: `run_hardening` directly calls `run_testing`, which calls `run_ci_checks`, which calls `run_verification`. This eliminates coordination overhead between phases and ensures the controller file is not modified between phases. The thread holds the workflow from hardening through verification.
 
-- **Scheduler-dispatched phases (enhance mode)**: Enhance mode uses the Scheduler for dispatch instead of direct `safe_thread` calls. This enables parallel batch execution across controllers with lock-based conflict resolution. Read-only phases (E0-E4) are dispatched without locks. Write phases (E7-E10) acquire locks before dispatch.
+- **Scheduler-dispatched phases (enhance mode)**: Enhance mode uses the Scheduler for dispatch instead of direct `safe_thread` calls. This enables parallel execution across controllers with lock-based conflict resolution for shared resources. Read-only phases (E0-E4) are dispatched without locks. Write phases (E7-E10) acquire locks before dispatch.
 
-- **Single-thread batch execution**: The Scheduler dispatches once per batch. The dispatched thread runs the full apply→test→ci→verify chain sequentially, holding the grant throughout. This mirrors hardening's sequential chaining and ensures files are not modified between phases within a batch.
+- **Sequential batches within a controller, parallel across controllers**: Within a controller, batches execute one at a time — the full E7→E10 chain completes before the next batch begins. This simplifies status tracking (the workflow's `current_batch_id` and `status` fields track the active batch) and avoids intra-controller conflicts. Across controllers, the Scheduler dispatches batches concurrently, with the LockManager mediating access to shared files (e.g., concerns, layouts, migrations). The dispatched thread runs the full apply→test→ci→verify chain sequentially, holding the grant throughout. This mirrors hardening's sequential chaining.
 
 - **Two-mode sequential pipeline**: Hardening is a prerequisite for enhance. This ensures controllers have a baseline security posture before broader improvements begin. When `run_verification` succeeds in hardening mode, the workflow status advances to `h_complete`. The operator then starts enhance analysis via the UI — the transition is not automatic.
 
@@ -546,7 +544,7 @@ The path allowlist and grant coverage serve as independent safety layers: the al
 `try_transition` enforces two guard types:
 
 - **`:not_active`** — succeeds if no workflow exists for the controller, or if the existing workflow's status is not in `ACTIVE_STATUSES`. Creates or resets the workflow. Prevents double-starts.
-- **Named guard** (e.g., `"h_awaiting_decisions"`, `"h_complete"`) — succeeds only if the workflow's current status exactly matches the guard string. Used for phase-specific transitions (e.g., decisions can only be submitted when status is `h_awaiting_decisions`; enhance analysis can only start when status is `h_complete`).
+- **Named guard** (e.g., `"h_awaiting_decisions"`, `"h_complete"`, `"e_awaiting_batch_approval"`) — succeeds only if the workflow's current status exactly matches the guard string. Used for phase-specific transitions (e.g., decisions can only be submitted when status is `h_awaiting_decisions`; enhance analysis can only start when status is `h_complete`; batch approval requires `e_awaiting_batch_approval`).
 
 Both guards operate atomically under `@mutex`. On success, the status is updated and error is cleared. On failure, a descriptive error string is returned.
 
@@ -595,8 +593,8 @@ Both guards operate atomically under `@mutex`. On success, the status is updated
 | POST | `/enhance/research` | Submit research result (manual paste) for a topic |
 | POST | `/enhance/research/api` | Trigger Claude API research (with web search) for a topic |
 | POST | `/enhance/decisions` | Submit enhance item decisions (TODO/DEFER/REJECT) |
-| POST | `/enhance/batches/approve` | Approve batch plan and start execution |
-| POST | `/enhance/batches/replan` | Reject batch plan with notes, triggering re-planning |
+| POST | `/enhance/batches/approve` | Approve batch plan and start execution (requires `e_awaiting_batch_approval`) |
+| POST | `/enhance/batches/replan` | Reject batch plan with notes, triggering re-planning (requires `e_awaiting_batch_approval`) |
 | POST | `/enhance/retry-tests` | Retry batch testing from `e_testing` failure |
 | POST | `/enhance/retry-ci` | Retry batch CI from `e_ci_checking` failure |
 | GET | `/enhance/locks` | Current lock state and queue depth |
@@ -633,7 +631,8 @@ Each enhance phase writes structured output to the `.enhance/` sidecar directory
 Resume rules:
 - If `.harden/verification.json` exists → status is `h_complete` (eligible for enhance).
 - If `.enhance/analysis.json` exists but `research/` is incomplete → status is `e_researching`.
-- If `.enhance/decisions.json` exists but `batches.json` does not → status is `e_planning_batches`.
+- If `.enhance/decisions.json` exists but `batches.json` does not → status is `e_awaiting_decisions` (ready for re-submission).
+- If `.enhance/batches.json` exists but no batch has `apply.json` → status is `e_awaiting_batch_approval`.
 - If a batch's `apply.json` exists but `test_results.json` does not → that batch resumes at testing.
 - Deferred and rejected items in each controller's `.enhance/decisions/` are loaded at startup for the audit phase.
 
