@@ -107,7 +107,7 @@ class Pipeline
   end
 
   def cancelled?
-    @mutex.synchronize { @cancelled }
+    @cancelled  # Atomic in CRuby (GVL), safe without mutex — matches cancel!
   end
 
   def shutdown(timeout: 5)
@@ -649,13 +649,13 @@ class Pipeline
         answer = claude_call(prompt)
 
         @mutex.synchronize do
-          q = @queries.find { |q| q[:id] == query_id }
+          q = @queries.find { |entry| entry[:id] == query_id }
           q[:status] = "complete"
           q[:result] = answer
         end
       rescue => e
         @mutex.synchronize do
-          q = @queries.find { |q| q[:id] == query_id }
+          q = @queries.find { |entry| entry[:id] == query_id }
           q[:status] = "error"
           q[:error] = e.message
         end
@@ -696,13 +696,13 @@ class Pipeline
         explanation = claude_call(prompt)
 
         @mutex.synchronize do
-          q = @queries.find { |q| q[:id] == query_id }
+          q = @queries.find { |entry| entry[:id] == query_id }
           q[:status] = "complete"
           q[:result] = explanation
         end
       rescue => e
         @mutex.synchronize do
-          q = @queries.find { |q| q[:id] == query_id }
+          q = @queries.find { |entry| entry[:id] == query_id }
           q[:status] = "error"
           q[:error] = e.message
         end
@@ -763,6 +763,13 @@ class Pipeline
 
   def get_prompt(controller_name, phase)
     @mutex.synchronize { @prompt_store.dig(controller_name, phase) }
+  end
+
+  def sanitize_error(msg)
+    msg.gsub(@rails_root, "<project>")
+       .gsub(File.realpath(@rails_root), "<project>")
+  rescue StandardError
+    msg
   end
 
   private
@@ -863,26 +870,23 @@ class Pipeline
 
   def parse_json_response(raw)
     cleaned = raw.gsub(/\A```json\s*/, "").gsub(/\s*```\z/, "").strip
-    JSON.parse(cleaned)
-  rescue JSON::ParserError
-    start = raw.index("{")
-    finish = raw.rindex("}")
-    if start && finish && finish > start
-      JSON.parse(raw[start..finish])
-    else
-      raise "Failed to parse JSON from claude response: #{raw[0..200]}"
+    result = begin
+      JSON.parse(cleaned)
+    rescue JSON::ParserError
+      start = raw.index("{")
+      finish = raw.rindex("}")
+      if start && finish && finish > start
+        JSON.parse(raw[start..finish])
+      else
+        raise "Failed to parse JSON from claude response: #{raw[0..200]}"
+      end
     end
+    raise "Expected JSON object but got #{result.class}: #{raw[0..200]}" unless result.is_a?(Hash)
+    result
   end
 
   def add_error(msg)
     @state[:errors] << { message: sanitize_error(msg), at: Time.now.iso8601 }
-  end
-
-  def sanitize_error(msg)
-    msg.gsub(@rails_root, "<project>")
-       .gsub(File.realpath(@rails_root), "<project>")
-  rescue StandardError
-    msg
   end
 
   # Drop oldest completed queries when over the cap (caller holds @mutex)

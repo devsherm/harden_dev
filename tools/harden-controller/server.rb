@@ -20,7 +20,7 @@ set :server, :puma
 set :server_settings, { force_shutdown_after: 3 }
 set :run, false
 
-set :sessions, same_site: :lax, secure: (ENV["RACK_ENV"] != "test"), httponly: true
+set :sessions, same_site: :strict, secure: (ENV["RACK_ENV"] != "test"), httponly: true
 set :session_secret, ENV.fetch("SESSION_SECRET") { SecureRandom.hex(64) }
 # Host auth is handled by passcode; allow any host (ngrok, LAN, rack-test)
 set :host_authorization, permitted_hosts: []
@@ -48,6 +48,7 @@ end
 AUTH_ATTEMPTS = {}  # ip => { count:, first_at: }
 AUTH_MAX_ATTEMPTS = 5
 AUTH_WINDOW = 900  # 15 minutes
+AUTH_MAX_TRACKED_IPS = 10_000
 
 # Rails root defaults to current directory (run from within your Rails project)
 RAILS_ROOT = ENV.fetch("RAILS_ROOT", ".")
@@ -80,7 +81,14 @@ before do
   if CORS_ORIGIN
     headers "Access-Control-Allow-Origin" => CORS_ORIGIN,
             "Access-Control-Allow-Methods" => "GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers" => "Content-Type, X-Requested-With"
+            "Access-Control-Allow-Headers" => "Content-Type, X-Requested-With",
+            "Vary" => "Origin"
+  end
+
+  # ── Rate-limit bookkeeping: prune expired entries if over cap ──
+  if AUTH_ATTEMPTS.size > AUTH_MAX_TRACKED_IPS
+    now_rl = Time.now.to_i
+    AUTH_ATTEMPTS.delete_if { |_, v| (now_rl - v[:first_at]) >= AUTH_WINDOW }
   end
 
   # ── Passcode auth gate ──────────────────────────────────
@@ -121,6 +129,19 @@ end
 # ── Helpers ──────────────────────────────────────────────────
 
 helpers do
+  # Reliable client IP behind ngrok/reverse proxies.
+  # Uses rightmost X-Forwarded-For entry (set by the nearest trusted proxy),
+  # falling back to request.ip when no proxy headers are present.
+  def client_ip
+    xff = request.env["HTTP_X_FORWARDED_FOR"]
+    if xff
+      # Rightmost entry is from the nearest trusted proxy (ngrok)
+      xff.split(",").last.strip
+    else
+      request.ip
+    end
+  end
+
   def parse_json_body
     JSON.parse(request.body.read)
   rescue JSON::ParserError => e
@@ -180,10 +201,10 @@ end
 # ── Authentication ───────────────────────────────────────────
 
 post "/auth" do
-  client_ip = request.ip
+  ip = client_ip
 
   # ── Rate limiting ───────────────────────────────────────
-  attempt = AUTH_ATTEMPTS[client_ip]
+  attempt = AUTH_ATTEMPTS[ip]
   if attempt && attempt[:count] >= AUTH_MAX_ATTEMPTS && (Time.now.to_i - attempt[:first_at]) < AUTH_WINDOW
     halt 429, { "Content-Type" => "text/html" }, login_page.sub(
       "</form>",
@@ -192,7 +213,7 @@ post "/auth" do
   end
 
   if HardenAuth.passcode && Rack::Utils.secure_compare(params["passcode"].to_s, HardenAuth.passcode)
-    AUTH_ATTEMPTS.delete(client_ip)
+    AUTH_ATTEMPTS.delete(ip)
     env["rack.session.options"][:renew] = true   # regenerate session ID (prevent fixation)
     session[:authenticated] = true
     redirect "/"
@@ -201,7 +222,7 @@ post "/auth" do
   else
     now = Time.now.to_i
     if attempt.nil? || (now - attempt[:first_at]) >= AUTH_WINDOW
-      AUTH_ATTEMPTS[client_ip] = { count: 1, first_at: now }
+      AUTH_ATTEMPTS[ip] = { count: 1, first_at: now }
     else
       attempt[:count] += 1
     end
@@ -263,7 +284,7 @@ post "/pipeline/load-analysis" do
     $pipeline.load_existing_analysis(controller)
     { status: "loaded", controller: controller }.to_json
   rescue => e
-    halt 422, { error: $pipeline.send(:sanitize_error, e.message) }.to_json
+    halt 422, { error: $pipeline.sanitize_error(e.message) }.to_json
   end
 end
 
