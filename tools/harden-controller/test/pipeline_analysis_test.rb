@@ -99,22 +99,6 @@ class PipelineAnalysisTest < OrchestrationTestCase
     assert_empty @claude_calls
   end
 
-  def test_retry_analysis_from_error_state
-    seed_workflow(@ctrl_name, status: "error", error: "previous failure")
-    stub_claude_call(analysis_fixture)
-
-    result = @pipeline.retry_analysis(@ctrl_name)
-    assert_equal "retrying", result[:status]
-
-    # Wait for the safe_thread to complete
-    threads = @pipeline.instance_variable_get(:@threads)
-    threads.each { |t| t.join(5) }
-
-    wf = workflow_state(@ctrl_name)
-    assert_equal "awaiting_decisions", wf[:status]
-    assert_nil wf[:error]
-  end
-
   # ── Edge-case fixture tests ──────────────────────────────
 
   def test_zero_findings_still_succeeds

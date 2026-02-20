@@ -108,22 +108,4 @@ class PipelineCiChecksTest < OrchestrationTestCase
     assert_equal fixed_source, File.read(@ctrl_path)
   end
 
-  def test_retry_ci_from_failed_state
-    seed_workflow(@ctrl_name, status: "ci_failed", analysis: analysis_fixture)
-    stub_ci_checks_pass
-    verification_recorder = capture_chained_call(:run_verification)
-
-    @pipeline.retry_ci(@ctrl_name)
-
-    wf = workflow_state(@ctrl_name)
-    assert_equal "ci_passed", wf[:status]
-    assert verification_recorder.called?
-  end
-
-  def test_retry_ci_rejects_wrong_state
-    seed_workflow(@ctrl_name, status: "tested")
-
-    err = assert_raises(RuntimeError) { @pipeline.retry_ci(@ctrl_name) }
-    assert_includes err.message, "not in ci_failed state"
-  end
 end

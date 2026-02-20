@@ -122,22 +122,4 @@ class PipelineTestingTest < OrchestrationTestCase
     refute ci_recorder.called?
   end
 
-  def test_retry_tests_from_failed_state
-    seed_workflow(@ctrl_name, status: "tests_failed", analysis: analysis_fixture)
-    stub_spawn(output: "0 failures", success: true)
-    ci_recorder = capture_chained_call(:run_ci_checks)
-
-    @pipeline.retry_tests(@ctrl_name)
-
-    wf = workflow_state(@ctrl_name)
-    assert_equal "tested", wf[:status]
-    assert ci_recorder.called?
-  end
-
-  def test_retry_tests_rejects_wrong_state
-    seed_workflow(@ctrl_name, status: "hardened")
-
-    err = assert_raises(RuntimeError) { @pipeline.retry_tests(@ctrl_name) }
-    assert_includes err.message, "not in tests_failed state"
-  end
 end

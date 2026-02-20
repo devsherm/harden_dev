@@ -321,17 +321,6 @@ class Pipeline
       run_ci_checks(name)
     end
 
-    def retry_tests(name)
-      @mutex.synchronize do
-        workflow = @state[:workflows][name]
-        raise "No workflow for #{name}" unless workflow
-        raise "#{name} is not in tests_failed state" unless workflow[:status] == "tests_failed"
-        workflow[:status] = "hardened"
-        workflow[:error] = nil
-      end
-      run_testing(name)
-    end
-
     # ── Phase 3.75: CI Checking ──────────────────────────────
 
     def run_ci_checks(name)
@@ -430,17 +419,6 @@ class Pipeline
       run_verification(name)
     end
 
-    def retry_ci(name)
-      @mutex.synchronize do
-        workflow = @state[:workflows][name]
-        raise "No workflow for #{name}" unless workflow
-        raise "#{name} is not in ci_failed state" unless workflow[:status] == "ci_failed"
-        workflow[:status] = "tested"
-        workflow[:error] = nil
-      end
-      run_ci_checks(name)
-    end
-
     # ── Phase 4: Verification ─────────────────────────────────
 
     def run_verification(name)
@@ -452,9 +430,10 @@ class Pipeline
         source_path = workflow[:full_path]
         ctrl_name = workflow[:name]
         original_source = workflow[:original_source]
-        hardened_source = File.read(source_path)
         analysis_json = workflow[:analysis].to_json
       end
+
+      hardened_source = File.read(source_path)
 
       begin
         prompt = Prompts.verify(ctrl_name, original_source, hardened_source, analysis_json)
@@ -573,17 +552,5 @@ class Pipeline
       { query_id: query_id }
     end
 
-    def retry_analysis(name)
-      @mutex.synchronize do
-        workflow = @state[:workflows][name]
-        return { error: "No workflow for #{name}" } unless workflow
-        return { error: "#{name} is not in error state" } unless workflow[:status] == "error"
-        workflow[:error] = nil
-      end
-
-      safe_thread(workflow_name: name) { run_analysis(name) }
-
-      { status: "retrying" }
-    end
   end
 end

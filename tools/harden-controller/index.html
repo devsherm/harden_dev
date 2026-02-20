@@ -599,6 +599,7 @@
     let pipeline = { phase: 'idle', controllers: [], workflows: {}, errors: [], queries: [] };
     let selectedController = null;  // name of controller shown in detail panel
     let perController = {};         // per-controller client-side UI state
+    let loadingActions = {};        // controller name → action string (e.g. 'analyze', 'submit')
 
     function getCtrlState(name) {
       if (!perController[name]) {
@@ -621,6 +622,7 @@
         sseBackoff = 2000;
         try {
           pipeline = JSON.parse(e.data);
+          loadingActions = {};
           render();
         } catch (err) {
           console.warn('SSE parse error:', err);
@@ -714,11 +716,18 @@
         decision = { controller: name, action: 'selective', approved_findings: approved };
       }
 
-      await apiFetch('/decisions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(decision)
-      });
+      loadingActions[name] = 'submit';
+      render();
+      try {
+        await apiFetch('/decisions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(decision)
+        });
+      } catch (_) {
+        delete loadingActions[name];
+        render();
+      }
     }
 
     async function explainFinding(name, findingId) {
@@ -745,49 +754,84 @@
     }
 
     async function retryTests(name) {
-      await apiFetch('/pipeline/retry-tests', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ controller: name })
-      });
+      loadingActions[name] = 'retry_tests';
+      render();
+      try {
+        await apiFetch('/pipeline/retry-tests', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ controller: name })
+        });
+      } catch (_) {
+        delete loadingActions[name];
+        render();
+      }
     }
 
     async function retryCi(name) {
-      await apiFetch('/pipeline/retry-ci', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ controller: name })
-      });
+      loadingActions[name] = 'retry_ci';
+      render();
+      try {
+        await apiFetch('/pipeline/retry-ci', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ controller: name })
+        });
+      } catch (_) {
+        delete loadingActions[name];
+        render();
+      }
     }
 
     async function retryAnalysis(name) {
-      await apiFetch('/pipeline/retry', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ controller: name })
-      });
+      loadingActions[name] = 'retry';
+      render();
+      try {
+        await apiFetch('/pipeline/retry', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ controller: name })
+        });
+      } catch (_) {
+        delete loadingActions[name];
+        render();
+      }
     }
 
     async function analyzeController(name, evt) {
       if (evt) evt.stopPropagation();
-      await apiFetch('/pipeline/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ controller: name })
-      });
-      selectedController = name;
+      loadingActions[name] = 'analyze';
       render();
+      try {
+        await apiFetch('/pipeline/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ controller: name })
+        });
+        selectedController = name;
+        render();
+      } catch (_) {
+        delete loadingActions[name];
+        render();
+      }
     }
 
     async function loadExistingAnalysis(name, evt) {
       if (evt) evt.stopPropagation();
-      await apiFetch('/pipeline/load-analysis', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ controller: name })
-      });
-      selectedController = name;
+      loadingActions[name] = 'load';
       render();
+      try {
+        await apiFetch('/pipeline/load-analysis', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ controller: name })
+        });
+        selectedController = name;
+        render();
+      } catch (_) {
+        delete loadingActions[name];
+        render();
+      }
     }
 
     function selectController(name) {
@@ -896,8 +940,12 @@
       // Determine action buttons
       let actions = '';
       const isActive = workflow && ['analyzing', 'hardening', 'testing', 'fixing_tests', 'ci_checking', 'fixing_ci', 'verifying'].includes(workflow.status);
+      const loading = loadingActions[c.name];
 
-      if (!isActive) {
+      if (loading) {
+        const label = { analyze: 'Analyzing...', load: 'Loading...', retry: 'Retrying...' }[loading] || 'Working...';
+        actions = `<button class="primary" disabled>${label}</button>`;
+      } else if (!isActive) {
         if (c.existing_analysis_at) {
           actions = `
             <button class="primary" onclick="loadExistingAnalysis('${escapeAttr(c.name)}', event)">Use Existing</button>
@@ -990,7 +1038,7 @@
             </span>
           </div>
 
-          ${workflow.error ? `<div class="error-text">${escapeHtml(workflow.error)} <button onclick="retryAnalysis('${escapeAttr(name)}')">Retry</button></div>` : ''}
+          ${workflow.error ? `<div class="error-text">${escapeHtml(workflow.error)} <button onclick="retryAnalysis('${escapeAttr(name)}')" ${loadingActions[name] === 'retry' ? 'disabled' : ''}>${loadingActions[name] === 'retry' ? 'Retrying...' : 'Retry'}</button></div>` : ''}
 
           ${blockers.length ? `
             <div style="margin-top: 0.8rem;">
@@ -1022,7 +1070,7 @@
 
           ${workflow.status === 'tests_failed' ? `
             <div style="margin-top: 0.5rem;">
-              <button class="primary" onclick="retryTests('${escapeAttr(name)}')">Retry Tests</button>
+              <button class="primary" onclick="retryTests('${escapeAttr(name)}')" ${loadingActions[name] === 'retry_tests' ? 'disabled' : ''}>${loadingActions[name] === 'retry_tests' ? 'Retrying...' : 'Retry Tests'}</button>
             </div>
           ` : ''}
 
@@ -1030,7 +1078,7 @@
 
           ${workflow.status === 'ci_failed' ? `
             <div style="margin-top: 0.5rem;">
-              <button class="primary" onclick="retryCi('${escapeAttr(name)}')">Retry CI</button>
+              <button class="primary" onclick="retryCi('${escapeAttr(name)}')" ${loadingActions[name] === 'retry_ci' ? 'disabled' : ''}>${loadingActions[name] === 'retry_ci' ? 'Retrying...' : 'Retry CI'}</button>
             </div>
           ` : ''}
 
@@ -1048,7 +1096,8 @@
       if (isDecisionPhase) {
         const approvedCount = controllerFindings.filter(f => isFindingApproved(name, f.id)).length;
         const undismissedCount = blockers.filter(f => !cs.dismissedBlockers[f.id]).length;
-        const disabled = undismissedCount > 0 || approvedCount === 0;
+        const isSubmitting = loadingActions[name] === 'submit';
+        const disabled = isSubmitting || undismissedCount > 0 || approvedCount === 0;
 
         html += `
           <div class="submit-bar">
@@ -1057,7 +1106,7 @@
             </span>
             <button class="primary" onclick="submitDecisions('${escapeAttr(name)}')"
               ${disabled ? 'disabled' : ''}>
-              Harden (${approvedCount})
+              ${isSubmitting ? 'Submitting...' : `Harden (${approvedCount})`}
             </button>
           </div>
         `;
@@ -1388,15 +1437,15 @@
       });
     }
 
-    function copyPrompt(name, phase) {
-      const workflow = (pipeline.workflows || {})[name];
-      const prompt = workflow?.prompts?.[phase];
-      if (!prompt) return;
-      copyToClipboard(prompt).then(() => {
+    async function copyPrompt(name, phase) {
+      try {
+        const res = await apiFetch(`/pipeline/${encodeURIComponent(name)}/prompts/${encodeURIComponent(phase)}`);
+        const data = await res.json();
+        await copyToClipboard(data.prompt);
         showToast(`Copied ${phase} prompt`);
-      }).catch(() => {
-        showToast('Failed to copy');
-      });
+      } catch (err) {
+        showToast('Failed to copy prompt');
+      }
     }
 
     function displayStatus(status) {

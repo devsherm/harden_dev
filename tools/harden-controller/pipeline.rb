@@ -125,7 +125,11 @@ class Pipeline
     @mutex.synchronize do
       now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       if @cached_json.nil? || (now - @last_serialized_at) > 0.1
-        @cached_json = @state.merge(queries: @queries).to_json(*args)
+        enriched = @state[:workflows].transform_values do |wf|
+          store = @prompt_store[wf[:name]]
+          store ? wf.merge(prompts: store.transform_values { true }) : wf
+        end
+        @cached_json = @state.merge(workflows: enriched, queries: @queries).to_json(*args)
         @last_serialized_at = now
       end
       @cached_json
