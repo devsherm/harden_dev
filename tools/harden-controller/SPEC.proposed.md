@@ -162,6 +162,36 @@ Workflow entries contain: `name`, `path`, `full_path`, `mode` (`"hardening"` or 
 
 Enhance mode adds to workflow entries: `e_analysis`, `research_topics`, `research_results`, `possible_items`, `ready_items`, `e_decisions`, `batches`, `batch_workflows` (a Hash of per-batch state keyed by batch ID).
 
+Both modes share a single `status` field per workflow. The `mode` field (`"hardening"` or `"enhance"`) tracks which mode is active. The `e_` prefix on enhance statuses prevents ambiguity. `ACTIVE_STATUSES` includes all async statuses from both modes:
+
+```ruby
+ACTIVE_STATUSES = [
+  # hardening
+  "analyzing", "hardening", "testing", "fixing_tests",
+  "ci_checking", "fixing_ci", "verifying",
+  # enhance
+  "e_analyzing", "researching", "extracting", "synthesizing",
+  "auditing", "planning_batches", "applying", "e_testing",
+  "e_fixing_tests", "e_ci_checking", "e_fixing_ci", "e_verifying"
+]
+```
+
+`to_json` serializes `@state` with lock and scheduler state for SSE/UI:
+
+```json
+{
+  "phase": "ready",
+  "controllers": [...],
+  "workflows": {...},
+  "queries": [...],
+  "locks": {
+    "active_grants": [...],
+    "queue_depth": 5,
+    "active_items": [...]
+  }
+}
+```
+
 #### Queries Subsystem
 
 Ad-hoc questions and finding explanations are tracked in a separate `@queries` instance variable (an Array), outside `@state` but guarded by the same `@mutex`. Each query entry records the question, the response from `claude -p`, and metadata (controller name, timestamp, type). The `ask_question` and `explain_finding` orchestration methods append to `@queries`.
@@ -331,7 +361,23 @@ end
 
 Sinatra application (`server.rb`) with Puma. Routes dispatch work by calling `try_transition` (to prevent double-starts) then spawning a `safe_thread` for the phase method. State is broadcast to the frontend via SSE (polling `to_json` every 500ms, sending only on change).
 
-Enhance mode routes use the Scheduler for dispatch instead of direct `safe_thread` calls. Human-gate phases (e_decide, batch_plan review) update state directly on operator action without the Scheduler.
+Enhance mode routes use the Scheduler for dispatch instead of direct `safe_thread` calls:
+
+```ruby
+post '/enhance/analyze/:controller' do
+  if $pipeline.scheduler
+    $pipeline.scheduler.enqueue(
+      workflow: params[:controller],
+      phase: :e_analyze,
+      lock_request: LockRequest.new(read_paths: [...], write_paths: [])
+    )
+  else
+    safe_thread { $pipeline.run_enhance_analysis(params[:controller]) }
+  end
+end
+```
+
+Human-gate phases (e_decide, batch_plan review) update state directly on operator action without the Scheduler.
 
 ### Frontend
 
@@ -466,12 +512,19 @@ The method raises if the parsed result is not a Hash (rejects arrays). If no val
 
 #### Grant Enforcement (Enhance Mode)
 
-When a `grant_id` is provided to `safe_write`, two additional checks apply:
+Enhance mode adds a `grant_id` parameter to `safe_write`:
 
-1. **Grant validity.** A valid, non-expired, non-released `LockGrant` must exist for the given `grant_id`.
-2. **Grant coverage.** The target path must appear in the grant's `write_paths` (exact match).
+```ruby
+safe_write(path, content, grant_id: nil)
+```
 
-When `grant_id` is nil, these checks are skipped (hardening mode / legacy behavior). If any check fails, the write is rejected with a `LockViolationError`.
+Three checks (all must pass):
+
+1. **Path allowlist.** Path is within `allowed_write_paths` (existing behavior, always checked).
+2. **Grant validity.** When `grant_id` is provided, a valid, non-expired, non-released `LockGrant` must exist for that id.
+3. **Grant coverage.** The target path must appear in the grant's `write_paths` (exact match).
+
+When `grant_id` is nil, checks 2 and 3 are skipped (hardening mode / legacy behavior). If any check fails, the write is rejected with a `LockViolationError`.
 
 The path allowlist and grant coverage serve as independent safety layers: the allowlist catches bugs in grant computation, and grants catch bugs in the allowlist configuration.
 
@@ -489,7 +542,7 @@ Both guards operate atomically under `@mutex`. On success, the status is updated
 ### External Dependencies
 
 - **`claude` CLI**: All automated phases invoke `claude -p <prompt>` via `spawn_with_timeout`. The CLI must be installed and authenticated. Concurrent calls are bounded by `MAX_CLAUDE_CONCURRENCY` (12).
-- **Claude Messages API**: Research phase (enhance mode) uses the Messages API for text completion. Requires `ANTHROPIC_API_KEY`. Concurrent calls are bounded by `MAX_API_CONCURRENCY` (20).
+- **Claude Messages API**: Research phase (enhance mode) uses the Messages API for text completion. Requires `ANTHROPIC_API_KEY`. Concurrent calls are bounded by `MAX_API_CONCURRENCY` (20). Interface: `api_call(prompt, model: "claude-sonnet-4-6") -> String`.
 - **Rails test runner**: `bin/rails test [file]` for test execution. Falls back to full suite if no controller-specific test file exists.
 - **CI tools**: RuboCop (`bin/rubocop`), Brakeman (`bin/brakeman`), bundler-audit (`bin/bundler-audit`), importmap audit (`bin/importmap audit`). All run via `spawn_with_timeout` with `chdir` set to `rails_root`.
 - **CDN libraries** (frontend): marked 15.0.7, DOMPurify 3.2.5, morphdom 2.7.4 — loaded with SRI integrity hashes.
