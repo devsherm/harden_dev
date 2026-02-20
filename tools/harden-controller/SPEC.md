@@ -15,7 +15,7 @@ A standalone Sinatra application that orchestrates parallel `claude -p` calls to
 | **Finding** | A structured analysis result identifying a hardening opportunity. Has severity (high/medium/low), category, scope (controller/module/app), and suggested fix. |
 | **Blocker** | A finding with scope `module` or `app` — requires changes beyond the controller file. Displayed separately in the UI; must be dismissed before hardening proceeds. |
 | **Sidecar** | A JSON file stored in a `.harden/` (configurable) directory adjacent to the target controller. Persists phase outputs across restarts. |
-| **Decision** | The operator's response to analysis findings: `approve` (all), `selective` (specific findings), or `skip` (none). |
+| **Decision** | The operator's response to analysis findings: `approve` (apply all suggested fixes), `selective` (apply specific findings only), `modify` (apply fixes with operator-provided modifications via a notes field), or `skip` (bypass hardening entirely). |
 | **Query** | An ad-hoc question or finding explanation request. Dispatched to `claude -p` in a background thread; results delivered via SSE. |
 | **Safe write** | Path-validated file write. Rejects writes outside `allowed_write_paths` and resolves symlinks to prevent traversal. |
 | **Try transition** | Atomic state machine gate. Checks a guard condition under mutex and transitions workflow status, preventing double-starts. |
@@ -25,11 +25,32 @@ A standalone Sinatra application that orchestrates parallel `claude -p` calls to
 ### Pipeline Phases
 
 ```
-discover → analyze → awaiting_decisions → harden → test → fix_tests (loop) →
-ci_check → fix_ci (loop) → verify → complete
+discover → analyze → awaiting_decisions
+  → skip ─────────────────────────────────────────────────────→ skipped
+  → harden → hardened → test → fix_tests (loop)
+      → tested → ci_check → fix_ci (loop)
+          → ci_passed → verify → complete
+      │                   └──→ ci_failed (retry available)
+      └──→ tests_failed (retry available)
 ```
 
 Discovery is global (one pass over the entire `discovery_glob`). All subsequent phases operate per-controller. The phase chain from `harden` through `verify` executes sequentially within a single thread per controller — `run_hardening` calls `run_testing`, which calls `run_ci_checks`, which calls `run_verification`. The `awaiting_decisions` phase is a human gate that breaks this chain.
+
+Intermediate gate statuses control phase sequencing:
+
+| Status | Set by | Guards entry to |
+|---|---|---|
+| `hardened` | `run_hardening` on success | `run_testing` |
+| `tested` | `run_testing` on test pass | `run_ci_checks` |
+| `ci_passed` | `run_ci_checks` on CI pass | `run_verification` |
+
+Terminal/retry statuses:
+
+| Status | Meaning | Recovery |
+|---|---|---|
+| `skipped` | Operator chose `skip` decision | Re-analyze |
+| `tests_failed` | Fix loop exhausted `MAX_FIX_ATTEMPTS` | Retry button in UI |
+| `ci_failed` | Fix loop exhausted `MAX_CI_FIX_ATTEMPTS` | Retry button in UI |
 
 ### State Model
 
@@ -43,6 +64,12 @@ All state lives in `@state` (a Hash), accessed exclusively through `@mutex.synch
 | `errors` | Array | Global error log with timestamps |
 
 Workflow entries contain: `name`, `path`, `full_path`, `status`, `analysis`, `decision`, `hardened`, `test_results`, `ci_results`, `verification`, `error`, `started_at`, `completed_at`, `original_source`.
+
+#### Queries Subsystem
+
+Ad-hoc questions and finding explanations are tracked in a separate `@queries` instance variable (an Array), outside `@state` but guarded by the same `@mutex`. Each query entry records the question, the response from `claude -p`, and metadata (controller name, timestamp, type). The `ask_question` and `explain_finding` orchestration methods append to `@queries`.
+
+`MAX_QUERIES` (50) caps the array size. `prune_queries` removes the oldest entries when the cap is exceeded. The `to_json` method merges `@queries` into the serialized output alongside `@state`, so the frontend receives queries via the SSE stream.
 
 ### Concurrency Model
 
@@ -109,7 +136,7 @@ Single-file SPA (`index.html`). No build tools. CDN dependencies: marked (Markdo
 
 - **Process groups for subprocess management**: `spawn_with_timeout` creates subprocesses with `pgroup: true` and kills via `-TERM`/`-KILL` on the process group. This prevents orphaned child processes (e.g., if `claude -p` spawns sub-processes).
 
-- **Prompt store for debugging**: Prompts sent to `claude -p` are stored in `@prompt_store` and exposed via GET `/pipeline/:name/prompts/:phase`. The frontend offers "Copy Prompt" buttons so the operator can reproduce or debug any phase's claude call.
+- **Prompt store for debugging**: Prompts sent to `claude -p` are stored in `@prompt_store` (keyed by controller name and phase) and exposed via GET `/pipeline/:name/prompts/:phase`. The route validates the phase against `VALID_PROMPT_PHASES` (`analyze`, `harden`, `fix_tests`, `fix_ci`, `verify`) and returns 404 for unrecognized phases. The `to_json` method enriches each workflow entry with a `prompts` key — a hash mapping stored prompt phases to `true`, indicating which phases have stored prompts available. The frontend uses this to render "Copy Prompt" buttons so the operator can reproduce or debug any phase's claude call.
 
 - **SSE with change detection**: The `/events` endpoint polls `to_json` every 500ms and sends only when the JSON differs from the last sent value. `to_json` itself is cached for 100ms to avoid redundant serialization under concurrent SSE connections.
 
@@ -206,7 +233,7 @@ Both guards operate atomically under `@mutex`. On success, the status is updated
 | POST | `/pipeline/retry` | Retry from `error` (re-runs analysis) |
 | POST | `/shutdown` | Graceful server shutdown |
 | GET | `/events` | SSE stream of pipeline state |
-| GET | `/pipeline/:name/prompts/:phase` | Retrieve stored prompt for debugging |
+| GET | `/pipeline/:name/prompts/:phase` | Retrieve stored prompt for debugging (phase must be in `VALID_PROMPT_PHASES`) |
 
 ## Non-Goals
 
