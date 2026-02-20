@@ -1,4 +1,5 @@
 require "json"
+require "time"
 require "open3"
 require "fileutils"
 require "shellwords"
@@ -193,6 +194,13 @@ class Pipeline
 
     @mutex.synchronize do
       @state[:controllers] = discovered
+      @state[:phase] = "ready"
+    end
+  rescue => e
+    $stderr.puts "[discover_controllers] Failed: #{e.class}: #{e.message}"
+    $stderr.puts e.backtrace.first(5).join("\n") if e.backtrace
+    @mutex.synchronize do
+      add_error("Controller discovery failed: #{e.message}")
       @state[:phase] = "ready"
     end
   end

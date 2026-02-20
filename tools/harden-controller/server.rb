@@ -146,6 +146,9 @@ get "/events" do
       sleep 0.5
     rescue IOError, Errno::EPIPE, Errno::ECONNRESET
       break
+    rescue => e
+      $stderr.puts "[SSE] Unexpected error: #{e.class}: #{e.message}"
+      break
     end
   end
 end
