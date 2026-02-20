@@ -106,6 +106,14 @@ before do
   end
 end
 
+after do
+  headers "X-Frame-Options"           => "DENY",
+          "X-Content-Type-Options"     => "nosniff",
+          "Referrer-Policy"            => "no-referrer",
+          "Content-Security-Policy"    => "default-src 'none'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self'; frame-ancestors 'none'",
+          "Strict-Transport-Security"  => "max-age=63072000; includeSubDomains"
+end
+
 if CORS_ORIGIN
   options("*") { 200 }
 end
@@ -185,6 +193,7 @@ post "/auth" do
 
   if HardenAuth.passcode && Rack::Utils.secure_compare(params["passcode"].to_s, HardenAuth.passcode)
     AUTH_ATTEMPTS.delete(client_ip)
+    env["rack.session.options"][:renew] = true   # regenerate session ID (prevent fixation)
     session[:authenticated] = true
     redirect "/"
   elsif HardenAuth.passcode.nil?
@@ -283,31 +292,46 @@ end
 # ── SSE Stream ───────────────────────────────────────────────
 
 SSE_TIMEOUT = 1200  # 20 minutes
+SSE_MAX_CONNECTIONS = 4
+$sse_connections = Mutex.new
+$sse_count = 0
 
 get "/events" do
   content_type "text/event-stream"
   cache_control :no_cache
 
-  stream(:keep_open) do |out|
-    last_json = nil
-    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + SSE_TIMEOUT
-    loop do
-      if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
-        out << "event: timeout\ndata: {}\n\n"
+  $sse_connections.synchronize do
+    if $sse_count >= SSE_MAX_CONNECTIONS
+      halt 429, { "Content-Type" => "application/json" },
+           { error: "Too many SSE connections" }.to_json
+    end
+    $sse_count += 1
+  end
+
+  begin
+    stream(:keep_open) do |out|
+      last_json = nil
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + SSE_TIMEOUT
+      loop do
+        if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+          out << "event: timeout\ndata: {}\n\n"
+          break
+        end
+        current_json = $pipeline.to_json
+        if current_json != last_json
+          out << "data: #{current_json}\n\n"
+          last_json = current_json
+        end
+        sleep 0.5
+      rescue IOError, Errno::EPIPE, Errno::ECONNRESET
+        break
+      rescue => e
+        $stderr.puts "[SSE] Unexpected error: #{e.class}: #{e.message}"
         break
       end
-      current_json = $pipeline.to_json
-      if current_json != last_json
-        out << "data: #{current_json}\n\n"
-        last_json = current_json
-      end
-      sleep 0.5
-    rescue IOError, Errno::EPIPE, Errno::ECONNRESET
-      break
-    rescue => e
-      $stderr.puts "[SSE] Unexpected error: #{e.class}: #{e.message}"
-      break
     end
+  ensure
+    $sse_connections.synchronize { $sse_count -= 1 }
   end
 end
 

@@ -265,6 +265,108 @@ end
 
 # ── CORS Tests ──────────────────────────────────────────────
 
+# ── Security Headers Tests ─────────────────────────────────
+
+class SecurityHeadersTest < AuthTestCase
+  def setup
+    super
+    @original_passcode = HardenAuth.passcode
+    HardenAuth.passcode = nil  # disable auth to simplify header testing
+  end
+
+  def teardown
+    HardenAuth.passcode = @original_passcode
+  end
+
+  def test_get_response_includes_security_headers
+    get "/"
+    assert_equal "DENY", last_response.headers["X-Frame-Options"]
+    assert_equal "nosniff", last_response.headers["X-Content-Type-Options"]
+    assert_equal "no-referrer", last_response.headers["Referrer-Policy"]
+    assert_includes last_response.headers["Content-Security-Policy"], "default-src 'none'"
+    assert_includes last_response.headers["Content-Security-Policy"], "frame-ancestors 'none'"
+    assert_includes last_response.headers["Strict-Transport-Security"], "max-age=63072000"
+  end
+
+  def test_post_response_includes_security_headers
+    post "/auth", passcode: "anything"
+    # Follow redirect to check headers on final response
+    follow_redirect!
+    assert_equal "DENY", last_response.headers["X-Frame-Options"]
+    assert_equal "nosniff", last_response.headers["X-Content-Type-Options"]
+    assert_equal "no-referrer", last_response.headers["Referrer-Policy"]
+  end
+
+  def test_json_endpoint_includes_security_headers
+    get "/pipeline/status"
+    assert_equal "DENY", last_response.headers["X-Frame-Options"]
+    assert_equal "nosniff", last_response.headers["X-Content-Type-Options"]
+  end
+end
+
+# ── SSE Connection Cap Tests ──────────────────────────────
+
+class SseConnectionCapTest < AuthTestCase
+  def setup
+    super
+    @original_passcode = HardenAuth.passcode
+    HardenAuth.passcode = nil  # disable auth to simplify SSE testing
+    # Reset SSE counter between tests
+    $sse_connections.synchronize { $sse_count = 0 }
+  end
+
+  def teardown
+    HardenAuth.passcode = @original_passcode
+    $sse_connections.synchronize { $sse_count = 0 }
+  end
+
+  def test_sse_connection_rejected_at_cap
+    # Simulate SSE_MAX_CONNECTIONS already taken
+    $sse_connections.synchronize { $sse_count = SSE_MAX_CONNECTIONS }
+
+    get "/events"
+    assert_equal 429, last_response.status
+    body = JSON.parse(last_response.body)
+    assert_equal "Too many SSE connections", body["error"]
+  end
+
+end
+
+# ── Session Fixation Tests ─────────────────────────────────
+
+class SessionFixationTest < AuthTestCase
+  PASSCODE = "test-secret-123"
+
+  def setup
+    super
+    @original_passcode = HardenAuth.passcode
+    HardenAuth.passcode = PASSCODE
+  end
+
+  def teardown
+    HardenAuth.passcode = @original_passcode
+  end
+
+  def test_session_id_changes_after_authentication
+    # Make a request to establish a session
+    get "/"
+    pre_auth_cookie = rack_mock_session.cookie_jar["rack.session"]
+    assert pre_auth_cookie, "Should have a session cookie before auth"
+
+    # Authenticate
+    post "/auth", passcode: PASSCODE
+    assert_equal 302, last_response.status
+
+    post_auth_cookie = rack_mock_session.cookie_jar["rack.session"]
+    assert post_auth_cookie, "Should have a session cookie after auth"
+
+    refute_equal pre_auth_cookie, post_auth_cookie,
+                 "Session ID must change after authentication (fixation protection)"
+  end
+end
+
+# ── CORS Tests ──────────────────────────────────────────────
+
 class CorsTest < AuthTestCase
   def test_no_cors_headers_by_default
     get "/"
