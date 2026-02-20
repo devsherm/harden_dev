@@ -20,12 +20,29 @@ set :server, :puma
 set :server_settings, { force_shutdown_after: 3 }
 set :run, false
 
-enable :sessions
+set :sessions, same_site: :lax, secure: (ENV["RACK_ENV"] != "test"), httponly: true
 set :session_secret, ENV.fetch("SESSION_SECRET") { SecureRandom.hex(64) }
 # Host auth is handled by passcode; allow any host (ngrok, LAN, rack-test)
 set :host_authorization, permitted_hosts: []
 
-HARDEN_PASSCODE = ENV["HARDEN_PASSCODE"]
+module HardenAuth
+  @passcode = ENV["HARDEN_PASSCODE"]
+  class << self; attr_accessor :passcode; end
+end
+
+configure do
+  if HardenAuth.passcode.nil?
+    bind_addr = settings.bind
+    unless bind_addr == "127.0.0.1" || bind_addr == "localhost"
+      HardenAuth.passcode = SecureRandom.hex(12)
+      $stderr.puts "=" * 60
+      $stderr.puts "WARNING: No HARDEN_PASSCODE set while binding to #{bind_addr}"
+      $stderr.puts "Auto-generated passcode: #{HardenAuth.passcode}"
+      $stderr.puts "Set HARDEN_PASSCODE env var to use your own."
+      $stderr.puts "=" * 60
+    end
+  end
+end
 
 # ── Rate limiting for /auth ─────────────────────────────────
 AUTH_ATTEMPTS = {}  # ip => { count:, first_at: }
@@ -55,6 +72,11 @@ $pipeline.safe_thread { $pipeline.discover_controllers }
 CORS_ORIGIN = ENV["CORS_ORIGIN"]
 
 before do
+  if request.post? && request.content_length && request.content_length.to_i > 1_048_576
+    halt 413, { "Content-Type" => "application/json" },
+         { error: "Request body too large" }.to_json
+  end
+
   if CORS_ORIGIN
     headers "Access-Control-Allow-Origin" => CORS_ORIGIN,
             "Access-Control-Allow-Methods" => "GET, POST, OPTIONS",
@@ -62,7 +84,7 @@ before do
   end
 
   # ── Passcode auth gate ──────────────────────────────────
-  next if HARDEN_PASSCODE.nil?                         # no passcode configured → open
+  next if HardenAuth.passcode.nil?                         # no passcode configured → open
   next if request.path_info == "/auth" && request.post? # login endpoint
   next if request.options?                              # CORS preflight
 
@@ -161,11 +183,11 @@ post "/auth" do
     )
   end
 
-  if HARDEN_PASSCODE && Rack::Utils.secure_compare(params["passcode"].to_s, HARDEN_PASSCODE)
+  if HardenAuth.passcode && Rack::Utils.secure_compare(params["passcode"].to_s, HardenAuth.passcode)
     AUTH_ATTEMPTS.delete(client_ip)
     session[:authenticated] = true
     redirect "/"
-  elsif HARDEN_PASSCODE.nil?
+  elsif HardenAuth.passcode.nil?
     redirect "/"
   else
     now = Time.now.to_i
@@ -232,7 +254,7 @@ post "/pipeline/load-analysis" do
     $pipeline.load_existing_analysis(controller)
     { status: "loaded", controller: controller }.to_json
   rescue => e
-    halt 422, { error: e.message }.to_json
+    halt 422, { error: $pipeline.send(:sanitize_error, e.message) }.to_json
   end
 end
 
@@ -260,13 +282,20 @@ end
 
 # ── SSE Stream ───────────────────────────────────────────────
 
+SSE_TIMEOUT = 1200  # 20 minutes
+
 get "/events" do
   content_type "text/event-stream"
   cache_control :no_cache
 
   stream(:keep_open) do |out|
     last_json = nil
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + SSE_TIMEOUT
     loop do
+      if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+        out << "event: timeout\ndata: {}\n\n"
+        break
+      end
       current_json = $pipeline.to_json
       if current_json != last_json
         out << "data: #{current_json}\n\n"
@@ -394,23 +423,6 @@ end
 # ── Manual startup with TOCTOU retry ────────────────────────
 
 if __FILE__ == $PROGRAM_NAME
-  # Auto-generate passcode if binding to non-localhost without one
-  if HARDEN_PASSCODE.nil?
-    bind_addr = Sinatra::Application.bind
-    unless bind_addr == "127.0.0.1" || bind_addr == "localhost"
-      generated = SecureRandom.hex(12)
-      $stderr.puts "=" * 60
-      $stderr.puts "WARNING: No HARDEN_PASSCODE set while binding to #{bind_addr}"
-      $stderr.puts "Auto-generated passcode: #{generated}"
-      $stderr.puts "Set HARDEN_PASSCODE env var to use your own."
-      $stderr.puts "=" * 60
-      old_verbose = $VERBOSE
-      $VERBOSE = nil
-      Object.const_set(:HARDEN_PASSCODE, generated)
-      $VERBOSE = old_verbose
-    end
-  end
-
   MAX_PORT_RETRIES = 3
 
   retries = 0

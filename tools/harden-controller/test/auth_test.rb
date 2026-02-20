@@ -4,6 +4,7 @@ require "tmpdir"
 require "fileutils"
 
 # Prevent $pipeline.discover_controllers from running during require
+ENV["RACK_ENV"] = "test"
 ENV["RAILS_ROOT"] ||= Dir.mktmpdir("harden-auth-test-")
 
 require_relative "../server"
@@ -38,12 +39,12 @@ end
 class AuthDisabledTest < AuthTestCase
   def setup
     super
-    @original = HARDEN_PASSCODE
-    silence_warnings { Object.const_set(:HARDEN_PASSCODE, nil) }
+    @original_passcode = HardenAuth.passcode
+    HardenAuth.passcode = nil
   end
 
   def teardown
-    silence_warnings { Object.const_set(:HARDEN_PASSCODE, @original) }
+    HardenAuth.passcode = @original_passcode
   end
 
   def test_get_root_serves_index_without_auth
@@ -77,12 +78,12 @@ class AuthEnabledTest < AuthTestCase
 
   def setup
     super
-    @original = HARDEN_PASSCODE
-    silence_warnings { Object.const_set(:HARDEN_PASSCODE, PASSCODE) }
+    @original_passcode = HardenAuth.passcode
+    HardenAuth.passcode = PASSCODE
   end
 
   def teardown
-    silence_warnings { Object.const_set(:HARDEN_PASSCODE, @original) }
+    HardenAuth.passcode = @original_passcode
   end
 
   def test_get_root_shows_login_page
@@ -168,15 +169,15 @@ class CsrfTest < AuthTestCase
 
   def setup
     super
-    @original = HARDEN_PASSCODE
-    silence_warnings { Object.const_set(:HARDEN_PASSCODE, PASSCODE) }
+    @original_passcode = HardenAuth.passcode
+    HardenAuth.passcode = PASSCODE
     # Authenticate for all CSRF tests
     post "/auth", passcode: PASSCODE
     follow_redirect!
   end
 
   def teardown
-    silence_warnings { Object.const_set(:HARDEN_PASSCODE, @original) }
+    HardenAuth.passcode = @original_passcode
   end
 
   def test_post_without_xhr_header_returns_403
@@ -215,13 +216,13 @@ class RateLimitTest < AuthTestCase
 
   def setup
     super
-    @original = HARDEN_PASSCODE
-    silence_warnings { Object.const_set(:HARDEN_PASSCODE, PASSCODE) }
+    @original_passcode = HardenAuth.passcode
+    HardenAuth.passcode = PASSCODE
     AUTH_ATTEMPTS.clear
   end
 
   def teardown
-    silence_warnings { Object.const_set(:HARDEN_PASSCODE, @original) }
+    HardenAuth.passcode = @original_passcode
     AUTH_ATTEMPTS.clear
   end
 

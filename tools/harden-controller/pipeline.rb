@@ -11,6 +11,7 @@ class Pipeline
   CLAUDE_TIMEOUT = 120
   COMMAND_TIMEOUT = 60
   MAX_QUERIES = 50
+  MAX_CLAUDE_CONCURRENCY = 12
 
   # Synchronized accessors — never expose @state directly.
   # Use workflow_status / workflow_data for route guards.
@@ -69,6 +70,9 @@ class Pipeline
     @queries = []  # [{id:, controller:, type:, question:, finding_id:, status:, result:, error:, created_at:}]
     @cached_json = nil
     @last_serialized_at = 0
+    @claude_semaphore = Mutex.new
+    @claude_slots = ConditionVariable.new
+    @claude_active = 0
   end
 
   # ── Thread Management ────────────────────────────────────────
@@ -82,7 +86,7 @@ class Pipeline
         @mutex.synchronize do
           wf = @state[:workflows][workflow_name]
           if wf && wf[:status] != "error"
-            wf[:error] = e.message
+            wf[:error] = sanitize_error(e.message)
             wf[:status] = "error"
             add_error("Thread failed for #{workflow_name}: #{e.message}")
           end
@@ -265,7 +269,7 @@ class Pipeline
     rescue => e
       @mutex.synchronize do
         wf = @state[:workflows][name]
-        wf[:error] = e.message
+        wf[:error] = sanitize_error(e.message)
         wf[:status] = "error"
         add_error("Analysis failed for #{name}: #{e.message}")
       end
@@ -329,7 +333,7 @@ class Pipeline
     rescue => e
       @mutex.synchronize do
         wf = @state[:workflows][name]
-        wf[:error] = e.message
+        wf[:error] = sanitize_error(e.message)
         wf[:status] = "error"
         add_error("Hardening failed for #{name}: #{e.message}")
       end
@@ -439,7 +443,7 @@ class Pipeline
     rescue => e
       @mutex.synchronize do
         wf = @state[:workflows][name]
-        wf[:error] = e.message
+        wf[:error] = sanitize_error(e.message)
         wf[:status] = "error"
         add_error("Testing failed for #{name}: #{e.message}")
       end
@@ -555,7 +559,7 @@ class Pipeline
     rescue => e
       @mutex.synchronize do
         wf = @state[:workflows][name]
-        wf[:error] = e.message
+        wf[:error] = sanitize_error(e.message)
         wf[:status] = "error"
         add_error("CI checking failed for #{name}: #{e.message}")
       end
@@ -610,7 +614,7 @@ class Pipeline
     rescue => e
       @mutex.synchronize do
         wf = @state[:workflows][name]
-        wf[:error] = e.message
+        wf[:error] = sanitize_error(e.message)
         wf[:status] = "error"
         add_error("Verification failed for #{name}: #{e.message}")
       end
@@ -735,6 +739,7 @@ class Pipeline
       @state[:errors] = []
       @prompt_store.clear
       @queries.clear
+      @claude_active = 0
     end
     # Second drain: catch threads that snuck in between shutdown and the
     # mutex block above (race window where safe_thread could still append).
@@ -788,9 +793,31 @@ class Pipeline
   end
 
   def claude_call(prompt)
-    output, success = spawn_with_timeout("claude", "-p", prompt, timeout: CLAUDE_TIMEOUT)
-    raise "claude -p failed: #{output[0..500]}" unless success
-    output.strip
+    acquire_claude_slot
+    begin
+      output, success = spawn_with_timeout("claude", "-p", prompt, timeout: CLAUDE_TIMEOUT)
+      raise "claude -p failed: #{output[0..500]}" unless success
+      output.strip
+    ensure
+      release_claude_slot
+    end
+  end
+
+  def acquire_claude_slot
+    @claude_semaphore.synchronize do
+      while @claude_active >= MAX_CLAUDE_CONCURRENCY
+        @claude_slots.wait(@claude_semaphore, 5)
+        raise "Pipeline cancelled" if cancelled?
+      end
+      @claude_active += 1
+    end
+  end
+
+  def release_claude_slot
+    @claude_semaphore.synchronize do
+      @claude_active -= 1
+      @claude_slots.signal
+    end
   end
 
   def spawn_with_timeout(*cmd, timeout:, chdir: nil)
@@ -848,7 +875,14 @@ class Pipeline
   end
 
   def add_error(msg)
-    @state[:errors] << { message: msg, at: Time.now.iso8601 }
+    @state[:errors] << { message: sanitize_error(msg), at: Time.now.iso8601 }
+  end
+
+  def sanitize_error(msg)
+    msg.gsub(@rails_root, "<project>")
+       .gsub(File.realpath(@rails_root), "<project>")
+  rescue StandardError
+    msg
   end
 
   # Drop oldest completed queries when over the cap (caller holds @mutex)
