@@ -15,6 +15,7 @@ class Pipeline
     e_analyzing e_extracting e_synthesizing
     e_auditing e_planning_batches e_applying e_testing
     e_fixing_tests e_ci_checking e_fixing_ci e_verifying
+    e_batch_applied e_batch_tested e_batch_ci_passed e_batch_complete
   ].freeze
   CLAUDE_TIMEOUT = 120
   COMMAND_TIMEOUT = 60
@@ -191,7 +192,9 @@ class Pipeline
         lock_state = {
           active_grants: @lock_manager.active_grants,
           queue_depth:   @scheduler.queue_depth,
-          active_items:  @scheduler.active_items
+          active_items:  @scheduler.active_work_items.map { |wi|
+            { id: wi.id, workflow: wi.workflow, phase: wi.phase, status: wi.status }
+          }
         }
         @cached_json = @state.merge(
           workflows: enriched,

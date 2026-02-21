@@ -15,6 +15,16 @@ class Pipeline
       FileUtils.mkdir_p(dir)
     end
 
+    def write_enhance_sidecar(target_path, filename, content)
+      path = enhance_sidecar_path(target_path, filename)
+      FileUtils.mkdir_p(File.dirname(path))
+      real = File.realpath(File.dirname(path))
+      unless @enhance_allowed_write_paths.any? { |p| real.start_with?("#{File.realpath(File.join(@rails_root, p))}/") }
+        raise "Enhance sidecar path #{path} escapes allowed directories"
+      end
+      File.write(path, content)
+    end
+
     def write_sidecar(target_path, filename, content)
       path = sidecar_path(target_path, filename)
       real = File.realpath(File.dirname(path))

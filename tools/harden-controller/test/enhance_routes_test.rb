@@ -789,6 +789,6 @@ class EnhanceRoutesTest < Minitest::Test
     body = JSON.parse(last_response.body)
     assert_equal [], body["active_grants"]
     assert_equal 0,  body["queue_depth"]
-    assert_equal 0,  body["active_items"]
+    assert_equal [],  body["active_items"]
   end
 end

@@ -313,7 +313,8 @@ end
 # Retrieve prompt for a specific controller and phase
 VALID_PROMPT_PHASES = %w[
   h_analyze h_harden h_fix_tests h_fix_ci h_verify
-  e_analyze e_apply e_fix_tests e_fix_ci e_verify
+  e_analyze e_extract e_synthesize e_audit e_batch_plan
+  e_apply e_fix_tests e_fix_ci e_verify
 ].freeze
 
 get "/pipeline/:name/prompts/:phase" do
@@ -591,7 +592,7 @@ post "/enhance/batches/replan" do
   notes      = body["notes"]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
-  ok, err = $pipeline.replan_batches(controller, operator_notes: notes)
+  ok, err = $pipeline.start_replan_batches(controller, operator_notes: notes)
   halt 409, { error: err }.to_json unless ok
 
   { status: "replanning", controller: controller }.to_json

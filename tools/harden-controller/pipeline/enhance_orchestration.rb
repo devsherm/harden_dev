@@ -50,10 +50,7 @@ class Pipeline
         parsed = parse_json_response(result)
 
         # Write analysis.json to .enhance/ sidecar
-        enhance_dir = enhance_sidecar_path(source_path, "analysis.json")
-        FileUtils.mkdir_p(File.dirname(enhance_dir))
-        content = JSON.pretty_generate(parsed)
-        File.write(enhance_dir, content.end_with?("\n") ? content : "#{content}\n")
+        write_enhance_sidecar(source_path, "analysis.json", JSON.pretty_generate(parsed) + "\n")
 
         # Build research topics array from parsed response
         raw_topics = parsed["research_topics"] || []
@@ -270,9 +267,7 @@ class Pipeline
       return unless topic
 
       slug = topic_slug(topic[:prompt])
-      research_dir = enhance_sidecar_path(source_path, File.join("research", "#{slug}.md"))
-      FileUtils.mkdir_p(File.dirname(research_dir))
-      File.write(research_dir, result)
+      write_enhance_sidecar(source_path, File.join("research", "#{slug}.md"), result)
     rescue => e
       @mutex.synchronize { add_error("Failed to write research MD for #{name}: #{e.message}") }
     end
@@ -283,11 +278,8 @@ class Pipeline
         wf = @state[:workflows][name]
         wf ? wf[:research_topics].dup : []
       end
-      status_path = enhance_sidecar_path(source_path, "research_status.json")
-      FileUtils.mkdir_p(File.dirname(status_path))
       statuses = topics.map { |t| { prompt: t[:prompt], status: t[:status] } }
-      content = JSON.pretty_generate(statuses)
-      File.write(status_path, content.end_with?("\n") ? content : "#{content}\n")
+      write_enhance_sidecar(source_path, "research_status.json", JSON.pretty_generate(statuses) + "\n")
     rescue => e
       @mutex.synchronize { add_error("Failed to write research_status.json for #{name}: #{e.message}") }
     end
@@ -325,10 +317,12 @@ class Pipeline
       parsed = parse_json_response(result)
 
       # Write extract.json to .enhance/ sidecar
-      extract_path = enhance_sidecar_path(source_path, "extract.json")
-      FileUtils.mkdir_p(File.dirname(extract_path))
-      content = JSON.pretty_generate(parsed)
-      File.write(extract_path, content.end_with?("\n") ? content : "#{content}\n")
+      write_enhance_sidecar(source_path, "extract.json", JSON.pretty_generate(parsed) + "\n")
+
+      @mutex.synchronize do
+        @prompt_store[name] ||= {}
+        @prompt_store[name][:e_extract] = prompt
+      end
 
       parsed
     end
@@ -362,10 +356,12 @@ class Pipeline
       parsed = parse_json_response(result)
 
       # Write synthesize.json to .enhance/ sidecar
-      synthesize_path = enhance_sidecar_path(source_path, "synthesize.json")
-      FileUtils.mkdir_p(File.dirname(synthesize_path))
-      content = JSON.pretty_generate(parsed)
-      File.write(synthesize_path, content.end_with?("\n") ? content : "#{content}\n")
+      write_enhance_sidecar(source_path, "synthesize.json", JSON.pretty_generate(parsed) + "\n")
+
+      @mutex.synchronize do
+        @prompt_store[name] ||= {}
+        @prompt_store[name][:e_synthesize] = prompt
+      end
 
       parsed
     end
@@ -403,10 +399,12 @@ class Pipeline
       parsed = parse_json_response(result)
 
       # Write audit.json to .enhance/ sidecar
-      audit_path = enhance_sidecar_path(source_path, "audit.json")
-      FileUtils.mkdir_p(File.dirname(audit_path))
-      content = JSON.pretty_generate(parsed)
-      File.write(audit_path, content.end_with?("\n") ? content : "#{content}\n")
+      write_enhance_sidecar(source_path, "audit.json", JSON.pretty_generate(parsed) + "\n")
+
+      @mutex.synchronize do
+        @prompt_store[name] ||= {}
+        @prompt_store[name][:e_audit] = prompt
+      end
 
       parsed
     end
@@ -550,10 +548,7 @@ class Pipeline
       end
 
       # Write decisions.json to enhance sidecar
-      decisions_json_path = enhance_sidecar_path(source_path, "decisions.json")
-      FileUtils.mkdir_p(File.dirname(decisions_json_path))
-      content = JSON.pretty_generate(decisions)
-      File.write(decisions_json_path, content.end_with?("\n") ? content : "#{content}\n")
+      write_enhance_sidecar(source_path, "decisions.json", JSON.pretty_generate(decisions) + "\n")
 
       # Persist DEFER items to decisions/deferred.json (merging with existing)
       persist_decisions_file(source_path, "deferred.json", deferred_entries)
@@ -610,10 +605,7 @@ class Pipeline
       parsed = parse_json_response(result)
 
       # Write batches.json to .enhance/ sidecar
-      batches_path = enhance_sidecar_path(source_path, "batches.json")
-      FileUtils.mkdir_p(File.dirname(batches_path))
-      content = JSON.pretty_generate(parsed)
-      File.write(batches_path, content.end_with?("\n") ? content : "#{content}\n")
+      write_enhance_sidecar(source_path, "batches.json", JSON.pretty_generate(parsed) + "\n")
 
       @mutex.synchronize do
         wf = @state[:workflows][name]
@@ -621,15 +613,18 @@ class Pipeline
         wf[:e_batches] = parsed
         wf[:status] = "e_awaiting_batch_approval"
         @prompt_store[name] ||= {}
-        @prompt_store[name][:batch_plan] = prompt
+        @prompt_store[name][:e_batch_plan] = prompt
       end
 
       parsed
     end
 
-    # Re-plan batches with optional operator notes.
+    # Re-plan batches with optional operator notes (synchronous).
     # Cycles e_awaiting_batch_approval → e_planning_batches → e_awaiting_batch_approval.
     # Re-planning is unbounded — the operator may invoke this as many times as needed.
+    #
+    # NOTE: This method blocks on claude_call. HTTP routes should use
+    # start_replan_batches instead to avoid blocking the request thread.
     #
     def replan_batches(name, operator_notes: nil)
       @mutex.synchronize do
@@ -657,6 +652,40 @@ class Pipeline
         end
         [false, sanitize_error(e.message)]
       end
+    end
+
+    # Async wrapper for replan_batches — performs guard check synchronously,
+    # then dispatches the blocking claude_call via safe_thread.
+    # Used by HTTP routes to avoid blocking the request thread.
+    #
+    def start_replan_batches(name, operator_notes: nil)
+      @mutex.synchronize do
+        wf = @state[:workflows][name]
+        return [false, "No workflow for #{name}"] unless wf
+        unless wf[:status] == "e_awaiting_batch_approval"
+          return [false, "#{name} is #{wf[:status]}, expected e_awaiting_batch_approval"]
+        end
+        wf[:status] = "e_planning_batches"
+        wf[:error]  = nil
+      end
+
+      safe_thread(workflow_name: name) do
+        begin
+          run_batch_planning(name, operator_notes: operator_notes)
+        rescue => e
+          @mutex.synchronize do
+            wf = @state[:workflows][name]
+            if wf
+              wf[:last_active_status] = wf[:status]
+              wf[:error]  = sanitize_error(e.message)
+              wf[:status] = "error"
+              add_error("Batch re-planning failed for #{name}: #{e.message}")
+            end
+          end
+        end
+      end
+
+      [true, nil]
     end
 
     # ── E7-E10: Batch Execution ───────────────────────────────
@@ -693,13 +722,6 @@ class Pipeline
         batch_items = batch["items"] || []
         is_last = (idx == batches.size - 1)
 
-        # Track current batch in workflow
-        @mutex.synchronize do
-          wf = @state[:workflows][name]
-          return unless wf
-          wf[:current_batch_id] = batch_id
-        end
-
         # Compute batch-specific sidecar output directory
         batch_sidecar_dir = File.join(
           File.dirname(source_path),
@@ -709,6 +731,20 @@ class Pipeline
           batch_id
         )
         FileUtils.mkdir_p(batch_sidecar_dir)
+
+        # Skip already-completed batches (have verification.json from a previous run).
+        # This prevents re-running all batches when retrying after a mid-batch failure.
+        batch_verification = File.join(batch_sidecar_dir, "verification.json")
+        if File.exist?(batch_verification)
+          next
+        end
+
+        # Track current batch in workflow
+        @mutex.synchronize do
+          wf = @state[:workflows][name]
+          return unless wf
+          wf[:current_batch_id] = batch_id
+        end
 
         # Capture batch items + analysis for prompt lambdas (closures)
         captured_batch_items = batch_items
@@ -831,6 +867,22 @@ class Pipeline
           @lock_manager.release(grant.id) if grant
         end
       end
+
+      # Post-loop completion: if all batches were skipped (already verified),
+      # ensure we still advance to e_enhance_complete.
+      @mutex.synchronize do
+        wf = @state[:workflows][name]
+        if wf && wf[:status] != "e_enhance_complete" && wf[:status] != "error"
+          all_verified = batches.all? do |batch|
+            dir = File.join(
+              File.dirname(source_path), @enhance_sidecar_dir,
+              File.basename(source_path, ".rb"), "batches", batch["id"]
+            )
+            File.exist?(File.join(dir, "verification.json"))
+          end
+          wf[:status] = "e_enhance_complete" if all_verified
+        end
+      end
     end
 
     private
@@ -848,8 +900,7 @@ class Pipeline
       new_entries.each { |e| existing_by_id[e["id"]] = e }
       merged = existing_by_id.values
 
-      content = JSON.pretty_generate(merged)
-      File.write(file_path, content.end_with?("\n") ? content : "#{content}\n")
+      write_enhance_sidecar(source_path, File.join("decisions", filename), JSON.pretty_generate(merged) + "\n")
     rescue => e
       @mutex.synchronize { add_error("Failed to write decisions/#{filename} for source: #{e.message}") }
     end

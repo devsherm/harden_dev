@@ -113,7 +113,7 @@ class PipelineResetTest < PipelineTestCase
     assert locks.key?("active_items"), "locks should include active_items"
     assert_equal [], locks["active_grants"]
     assert_equal 0, locks["queue_depth"]
-    assert_equal 0, locks["active_items"]
+    assert_equal [], locks["active_items"]
   end
 
   def test_new_kwargs_have_correct_defaults
