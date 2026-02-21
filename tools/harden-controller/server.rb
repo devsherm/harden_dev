@@ -266,7 +266,7 @@ post "/pipeline/analyze" do
   controller = body["controller"]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
-  ok, err = $pipeline.try_transition(controller, guard: :not_active, to: "analyzing")
+  ok, err = $pipeline.try_transition(controller, guard: :not_active, to: "h_analyzing")
   halt 409, { error: err }.to_json unless ok
 
   $pipeline.safe_thread(workflow_name: controller) { $pipeline.run_analysis(controller) }
@@ -311,7 +311,7 @@ get "/pipeline/status" do
 end
 
 # Retrieve prompt for a specific controller and phase
-VALID_PROMPT_PHASES = %w[analyze harden fix_tests fix_ci verify].freeze
+VALID_PROMPT_PHASES = %w[h_analyze h_harden h_fix_tests h_fix_ci h_verify].freeze
 
 get "/pipeline/:name/prompts/:phase" do
   content_type :json
@@ -380,7 +380,7 @@ post "/decisions" do
   controller = body.delete("controller")
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
-  ok, err = $pipeline.try_transition(controller, guard: "awaiting_decisions", to: "hardening")
+  ok, err = $pipeline.try_transition(controller, guard: "h_awaiting_decisions", to: "h_hardening")
   halt 409, { error: err }.to_json unless ok
 
   $pipeline.safe_thread(workflow_name: controller) { $pipeline.submit_decision(controller, body) }
@@ -430,7 +430,7 @@ post "/pipeline/retry-tests" do
   controller = body["controller"]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
-  ok, err = $pipeline.try_transition(controller, guard: "tests_failed", to: "hardened")
+  ok, err = $pipeline.try_transition(controller, guard: "h_tests_failed", to: "h_hardened")
   halt 409, { error: err }.to_json unless ok
 
   $pipeline.safe_thread(workflow_name: controller) { $pipeline.run_testing(controller) }
@@ -446,7 +446,7 @@ post "/pipeline/retry-ci" do
   controller = body["controller"]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
-  ok, err = $pipeline.try_transition(controller, guard: "ci_failed", to: "tested")
+  ok, err = $pipeline.try_transition(controller, guard: "h_ci_failed", to: "h_tested")
   halt 409, { error: err }.to_json unless ok
 
   $pipeline.safe_thread(workflow_name: controller) { $pipeline.run_ci_checks(controller) }
@@ -462,7 +462,7 @@ post "/pipeline/retry" do
   controller = body["controller"]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
-  ok, err = $pipeline.try_transition(controller, guard: "error", to: "analyzing")
+  ok, err = $pipeline.try_transition(controller, guard: "error", to: "h_analyzing")
   halt 409, { error: err }.to_json unless ok
 
   $pipeline.safe_thread(workflow_name: controller) { $pipeline.run_analysis(controller) }

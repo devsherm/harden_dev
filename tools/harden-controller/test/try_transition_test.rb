@@ -44,45 +44,45 @@ class TryTransitionTest < PipelineTestCase
   # ── :not_active guard tests ─────────────────────────────
 
   def test_not_active_guard_no_existing_workflow
-    ok, err = @pipeline.try_transition("posts_controller", guard: :not_active, to: "analyzing")
+    ok, err = @pipeline.try_transition("posts_controller", guard: :not_active, to: "h_analyzing")
 
     assert ok, "Expected success but got error: #{err}"
     assert_nil err
     wf = @pipeline.instance_variable_get(:@state)[:workflows]["posts_controller"]
-    assert_equal "analyzing", wf[:status]
+    assert_equal "h_analyzing", wf[:status]
     assert wf[:started_at], "Should set started_at"
   end
 
   def test_not_active_guard_with_active_workflow_fails
-    seed_workflow("posts_controller", status: "analyzing")
+    seed_workflow("posts_controller", status: "h_analyzing")
 
-    ok, err = @pipeline.try_transition("posts_controller", guard: :not_active, to: "analyzing")
+    ok, err = @pipeline.try_transition("posts_controller", guard: :not_active, to: "h_analyzing")
 
     refute ok
-    assert_match(/already analyzing/, err)
+    assert_match(/already h_analyzing/, err)
   end
 
   def test_not_active_guard_with_completed_workflow_succeeds
-    seed_workflow("posts_controller", status: "complete")
+    seed_workflow("posts_controller", status: "h_complete")
 
-    ok, err = @pipeline.try_transition("posts_controller", guard: :not_active, to: "analyzing")
+    ok, err = @pipeline.try_transition("posts_controller", guard: :not_active, to: "h_analyzing")
 
     assert ok, "Expected success for completed workflow but got: #{err}"
     assert_nil err
     wf = @pipeline.instance_variable_get(:@state)[:workflows]["posts_controller"]
-    assert_equal "analyzing", wf[:status]
+    assert_equal "h_analyzing", wf[:status]
   end
 
   def test_not_active_guard_with_error_workflow_succeeds
     seed_workflow("posts_controller", status: "error")
 
-    ok, err = @pipeline.try_transition("posts_controller", guard: :not_active, to: "analyzing")
+    ok, err = @pipeline.try_transition("posts_controller", guard: :not_active, to: "h_analyzing")
 
     assert ok, "Expected success for errored workflow but got: #{err}"
   end
 
   def test_not_active_guard_unknown_controller_fails
-    ok, err = @pipeline.try_transition("nonexistent_controller", guard: :not_active, to: "analyzing")
+    ok, err = @pipeline.try_transition("nonexistent_controller", guard: :not_active, to: "h_analyzing")
 
     refute ok
     assert_match(/Controller not found/, err)
@@ -91,29 +91,71 @@ class TryTransitionTest < PipelineTestCase
   # ── Named guard tests ──────────────────────────────────
 
   def test_named_guard_matching_transitions
-    seed_workflow("posts_controller", status: "awaiting_decisions")
+    seed_workflow("posts_controller", status: "h_awaiting_decisions")
 
-    ok, err = @pipeline.try_transition("posts_controller", guard: "awaiting_decisions", to: "hardening")
+    ok, err = @pipeline.try_transition("posts_controller", guard: "h_awaiting_decisions", to: "h_hardening")
 
     assert ok, "Expected success but got: #{err}"
     assert_nil err
     wf = @pipeline.instance_variable_get(:@state)[:workflows]["posts_controller"]
-    assert_equal "hardening", wf[:status]
+    assert_equal "h_hardening", wf[:status]
     assert_nil wf[:error], "Error should be cleared on transition"
   end
 
   def test_named_guard_not_matching_fails
-    seed_workflow("posts_controller", status: "analyzing")
+    seed_workflow("posts_controller", status: "h_analyzing")
 
-    ok, err = @pipeline.try_transition("posts_controller", guard: "awaiting_decisions", to: "hardening")
+    ok, err = @pipeline.try_transition("posts_controller", guard: "h_awaiting_decisions", to: "h_hardening")
 
     refute ok
-    assert_match(/expected awaiting_decisions/, err)
+    assert_match(/expected h_awaiting_decisions/, err)
   end
 
   def test_named_guard_missing_workflow_fails
     # No workflow seeded
-    ok, err = @pipeline.try_transition("posts_controller", guard: "awaiting_decisions", to: "hardening")
+    ok, err = @pipeline.try_transition("posts_controller", guard: "h_awaiting_decisions", to: "h_hardening")
+
+    refute ok
+    assert_match(/No workflow/, err)
+  end
+
+  # ── Array (compound) guard tests ───────────────────────
+
+  def test_array_guard_succeeds_when_status_matches_one_of_array
+    seed_workflow("posts_controller", status: "h_tested")
+
+    ok, err = @pipeline.try_transition("posts_controller", guard: ["h_tested", "h_fixing_tests"], to: "h_ci_checking")
+
+    assert ok, "Expected success but got error: #{err}"
+    assert_nil err
+    wf = @pipeline.instance_variable_get(:@state)[:workflows]["posts_controller"]
+    assert_equal "h_ci_checking", wf[:status]
+    assert_nil wf[:error], "Error should be cleared on transition"
+  end
+
+  def test_array_guard_succeeds_when_status_matches_second_entry
+    seed_workflow("posts_controller", status: "h_fixing_tests")
+
+    ok, err = @pipeline.try_transition("posts_controller", guard: ["h_tested", "h_fixing_tests"], to: "h_ci_checking")
+
+    assert ok, "Expected success but got error: #{err}"
+    assert_nil err
+    wf = @pipeline.instance_variable_get(:@state)[:workflows]["posts_controller"]
+    assert_equal "h_ci_checking", wf[:status]
+  end
+
+  def test_array_guard_fails_when_status_matches_none
+    seed_workflow("posts_controller", status: "h_analyzing")
+
+    ok, err = @pipeline.try_transition("posts_controller", guard: ["h_tested", "h_fixing_tests"], to: "h_ci_checking")
+
+    refute ok
+    assert_match(/expected one of h_tested, h_fixing_tests/, err)
+  end
+
+  def test_array_guard_fails_when_no_workflow_exists
+    # No workflow seeded for posts_controller
+    ok, err = @pipeline.try_transition("posts_controller", guard: ["h_tested", "h_fixing_tests"], to: "h_ci_checking")
 
     refute ok
     assert_match(/No workflow/, err)
@@ -127,7 +169,7 @@ class TryTransitionTest < PipelineTestCase
 
     threads = 10.times.map do
       Thread.new do
-        ok, err = @pipeline.try_transition("posts_controller", guard: :not_active, to: "analyzing")
+        ok, err = @pipeline.try_transition("posts_controller", guard: :not_active, to: "h_analyzing")
         mutex.synchronize { results << [ok, err] }
       end
     end

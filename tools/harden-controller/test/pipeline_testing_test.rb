@@ -12,14 +12,14 @@ class PipelineTestingTest < OrchestrationTestCase
   end
 
   def test_pass_on_first_attempt
-    seed_workflow(@ctrl_name, status: "hardened", analysis: analysis_fixture)
+    seed_workflow(@ctrl_name, status: "h_hardened", analysis: analysis_fixture)
     stub_spawn(output: "0 failures", success: true)
     ci_recorder = capture_chained_call(:run_ci_checks)
 
     @pipeline.run_testing(@ctrl_name)
 
     wf = workflow_state(@ctrl_name)
-    assert_equal "tested", wf[:status]
+    assert_equal "h_tested", wf[:status]
     assert_equal 1, wf[:test_results][:attempts].length
     assert wf[:test_results][:passed]
 
@@ -33,35 +33,37 @@ class PipelineTestingTest < OrchestrationTestCase
   end
 
   def test_fail_then_fix_succeeds
-    seed_workflow(@ctrl_name, status: "hardened", analysis: analysis_fixture)
+    seed_workflow(@ctrl_name, status: "h_hardened", analysis: analysis_fixture)
     stub_spawn_sequence([["FAIL output", false], ["0 failures", true]])
     stub_claude_call(fix_tests_fixture)
+    stub_copy_from_staging(@ctrl_path)
     ci_recorder = capture_chained_call(:run_ci_checks)
 
     @pipeline.run_testing(@ctrl_name)
 
     wf = workflow_state(@ctrl_name)
-    assert_equal "tested", wf[:status]
+    assert_equal "h_tested", wf[:status]
     assert_equal 2, wf[:test_results][:attempts].length
     assert wf[:test_results][:passed]
 
-    # Controller file rewritten by fix
+    # Controller file rewritten by copy_from_staging stub
     assert_equal HARDENED_SOURCE, File.read(@ctrl_path)
 
     assert ci_recorder.called?
   end
 
   def test_all_attempts_fail
-    seed_workflow(@ctrl_name, status: "hardened", analysis: analysis_fixture)
+    seed_workflow(@ctrl_name, status: "h_hardened", analysis: analysis_fixture)
     # 1 initial + MAX_FIX_ATTEMPTS(2) retries = 3 spawn calls
     stub_spawn(output: "FAIL", success: false)
     stub_claude_call(fix_tests_fixture)
+    stub_copy_from_staging(@ctrl_path)
     ci_recorder = capture_chained_call(:run_ci_checks)
 
     @pipeline.run_testing(@ctrl_name)
 
     wf = workflow_state(@ctrl_name)
-    assert_equal "tests_failed", wf[:status]
+    assert_equal "h_tests_failed", wf[:status]
     assert_equal 3, wf[:test_results][:attempts].length
     refute wf[:test_results][:passed]
 
@@ -84,7 +86,7 @@ class PipelineTestingTest < OrchestrationTestCase
   def test_no_test_file_runs_full_suite
     FileUtils.rm(@test_path)
 
-    seed_workflow(@ctrl_name, status: "hardened", analysis: analysis_fixture)
+    seed_workflow(@ctrl_name, status: "h_hardened", analysis: analysis_fixture)
     stub_spawn(output: "OK", success: true)
     capture_chained_call(:run_ci_checks)
 
@@ -95,7 +97,7 @@ class PipelineTestingTest < OrchestrationTestCase
   end
 
   def test_with_test_file_runs_specific
-    seed_workflow(@ctrl_name, status: "hardened", analysis: analysis_fixture)
+    seed_workflow(@ctrl_name, status: "h_hardened", analysis: analysis_fixture)
     stub_spawn(output: "OK", success: true)
     capture_chained_call(:run_ci_checks)
 
@@ -108,7 +110,7 @@ class PipelineTestingTest < OrchestrationTestCase
   end
 
   def test_spawn_error_sets_error_status
-    seed_workflow(@ctrl_name, status: "hardened", analysis: analysis_fixture)
+    seed_workflow(@ctrl_name, status: "h_hardened", analysis: analysis_fixture)
     @pipeline.define_singleton_method(:spawn_with_timeout) do |*cmd, timeout:, chdir: nil|
       raise RuntimeError, "Spawn exploded"
     end

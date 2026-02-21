@@ -7,7 +7,7 @@ class Pipeline
     def claude_call(prompt)
       acquire_claude_slot
       begin
-        output, success = spawn_with_timeout("claude", "-p", prompt, timeout: CLAUDE_TIMEOUT)
+        output, success = spawn_with_timeout("claude", "-p", "--dangerously-skip-permissions", prompt, timeout: CLAUDE_TIMEOUT)
         raise "claude -p failed: #{output[0..500]}" unless success
         output.strip
       ensure

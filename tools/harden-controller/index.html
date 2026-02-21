@@ -175,21 +175,21 @@
     }
 
     .workflow-dot.pending { background: var(--text-muted); opacity: 0.4; }
-    .workflow-dot.analyzing { background: var(--accent); animation: pulse 1s infinite; }
-    .workflow-dot.awaiting_decisions { background: var(--yellow); }
-    .workflow-dot.hardening { background: #a78bfa; animation: pulse 1s infinite; }
-    .workflow-dot.hardened { background: #818cf8; }
-    .workflow-dot.testing { background: #38bdf8; animation: pulse 1s infinite; }
-    .workflow-dot.fixing_tests { background: #f472b6; animation: pulse 1s infinite; }
-    .workflow-dot.tested { background: #22d3ee; }
-    .workflow-dot.tests_failed { background: var(--red); }
-    .workflow-dot.ci_checking { background: #2dd4bf; animation: pulse 1s infinite; }
-    .workflow-dot.fixing_ci { background: #c084fc; animation: pulse 1s infinite; }
-    .workflow-dot.ci_passed { background: #2dd4bf; }
-    .workflow-dot.ci_failed { background: var(--red); }
-    .workflow-dot.verifying { background: #818cf8; animation: pulse 1s infinite; }
-    .workflow-dot.complete { background: var(--green); }
-    .workflow-dot.skipped { background: var(--text-muted); }
+    .workflow-dot.h_analyzing { background: var(--accent); animation: pulse 1s infinite; }
+    .workflow-dot.h_awaiting_decisions { background: var(--yellow); }
+    .workflow-dot.h_hardening { background: #a78bfa; animation: pulse 1s infinite; }
+    .workflow-dot.h_hardened { background: #818cf8; }
+    .workflow-dot.h_testing { background: #38bdf8; animation: pulse 1s infinite; }
+    .workflow-dot.h_fixing_tests { background: #f472b6; animation: pulse 1s infinite; }
+    .workflow-dot.h_tested { background: #22d3ee; }
+    .workflow-dot.h_tests_failed { background: var(--red); }
+    .workflow-dot.h_ci_checking { background: #2dd4bf; animation: pulse 1s infinite; }
+    .workflow-dot.h_fixing_ci { background: #c084fc; animation: pulse 1s infinite; }
+    .workflow-dot.h_ci_passed { background: #2dd4bf; }
+    .workflow-dot.h_ci_failed { background: var(--red); }
+    .workflow-dot.h_verifying { background: #818cf8; animation: pulse 1s infinite; }
+    .workflow-dot.h_complete { background: var(--green); }
+    .workflow-dot.h_skipped { background: var(--text-muted); }
     .workflow-dot.error { background: var(--red); }
     .workflow-dot.none { background: var(--text-muted); opacity: 0.2; }
 
@@ -263,21 +263,21 @@
     }
 
     .status-pending .status-dot { background: var(--text-muted); }
-    .status-analyzing .status-dot { background: var(--accent); animation: pulse 1s infinite; }
-    .status-awaiting_decisions .status-dot { background: var(--yellow); }
-    .status-hardening .status-dot { background: #a78bfa; animation: pulse 1s infinite; }
-    .status-hardened .status-dot { background: #818cf8; }
-    .status-testing .status-dot { background: #38bdf8; animation: pulse 1s infinite; }
-    .status-fixing_tests .status-dot { background: #f472b6; animation: pulse 1s infinite; }
-    .status-tested .status-dot { background: #22d3ee; }
-    .status-tests_failed .status-dot { background: var(--red); }
-    .status-ci_checking .status-dot { background: #2dd4bf; animation: pulse 1s infinite; }
-    .status-fixing_ci .status-dot { background: #c084fc; animation: pulse 1s infinite; }
-    .status-ci_passed .status-dot { background: #2dd4bf; }
-    .status-ci_failed .status-dot { background: var(--red); }
-    .status-verifying .status-dot { background: #818cf8; animation: pulse 1s infinite; }
-    .status-complete .status-dot { background: var(--green); }
-    .status-skipped .status-dot { background: var(--text-muted); }
+    .status-h_analyzing .status-dot { background: var(--accent); animation: pulse 1s infinite; }
+    .status-h_awaiting_decisions .status-dot { background: var(--yellow); }
+    .status-h_hardening .status-dot { background: #a78bfa; animation: pulse 1s infinite; }
+    .status-h_hardened .status-dot { background: #818cf8; }
+    .status-h_testing .status-dot { background: #38bdf8; animation: pulse 1s infinite; }
+    .status-h_fixing_tests .status-dot { background: #f472b6; animation: pulse 1s infinite; }
+    .status-h_tested .status-dot { background: #22d3ee; }
+    .status-h_tests_failed .status-dot { background: var(--red); }
+    .status-h_ci_checking .status-dot { background: #2dd4bf; animation: pulse 1s infinite; }
+    .status-h_fixing_ci .status-dot { background: #c084fc; animation: pulse 1s infinite; }
+    .status-h_ci_passed .status-dot { background: #2dd4bf; }
+    .status-h_ci_failed .status-dot { background: var(--red); }
+    .status-h_verifying .status-dot { background: #818cf8; animation: pulse 1s infinite; }
+    .status-h_complete .status-dot { background: var(--green); }
+    .status-h_skipped .status-dot { background: var(--text-muted); }
     .status-error .status-dot { background: var(--red); }
 
     .findings { margin-top: 0.8rem; }
@@ -701,7 +701,7 @@
 
     async function submitDecisions(name) {
       const workflow = pipeline.workflows[name];
-      if (!workflow || workflow.status !== 'awaiting_decisions') return;
+      if (!workflow || workflow.status !== 'h_awaiting_decisions') return;
 
       const cs = getCtrlState(name);
       const findings = (workflow.analysis?.findings || []).filter(f => !isBlocker(f));
@@ -890,17 +890,17 @@
       statuses.forEach(s => counts[s] = (counts[s] || 0) + 1);
 
       const parts = [];
-      if (counts.analyzing)         parts.push(`<span class="count count-analyzing">${counts.analyzing} analyzing</span>`);
-      if (counts.hardening)         parts.push(`<span class="count count-analyzing">${counts.hardening} hardening</span>`);
-      if (counts.testing)           parts.push(`<span class="count count-analyzing">${counts.testing} testing</span>`);
-      if (counts.fixing_tests)      parts.push(`<span class="count count-analyzing">${counts.fixing_tests} fixing tests</span>`);
-      if (counts.ci_checking)       parts.push(`<span class="count count-analyzing">${counts.ci_checking} CI checking</span>`);
-      if (counts.fixing_ci)         parts.push(`<span class="count count-analyzing">${counts.fixing_ci} fixing CI</span>`);
-      if (counts.verifying)         parts.push(`<span class="count count-analyzing">${counts.verifying} verifying</span>`);
-      if (counts.awaiting_decisions) parts.push(`<span class="count count-awaiting">${counts.awaiting_decisions} awaiting decisions</span>`);
-      if (counts.tests_failed)      parts.push(`<span class="count count-errored">${counts.tests_failed} tests failed</span>`);
-      if (counts.ci_failed)         parts.push(`<span class="count count-errored">${counts.ci_failed} CI failed</span>`);
-      if (counts.complete)          parts.push(`<span class="count count-complete">${counts.complete} complete</span>`);
+      if (counts.h_analyzing)         parts.push(`<span class="count count-analyzing">${counts.h_analyzing} analyzing</span>`);
+      if (counts.h_hardening)         parts.push(`<span class="count count-analyzing">${counts.h_hardening} hardening</span>`);
+      if (counts.h_testing)           parts.push(`<span class="count count-analyzing">${counts.h_testing} testing</span>`);
+      if (counts.h_fixing_tests)      parts.push(`<span class="count count-analyzing">${counts.h_fixing_tests} fixing tests</span>`);
+      if (counts.h_ci_checking)       parts.push(`<span class="count count-analyzing">${counts.h_ci_checking} CI checking</span>`);
+      if (counts.h_fixing_ci)         parts.push(`<span class="count count-analyzing">${counts.h_fixing_ci} fixing CI</span>`);
+      if (counts.h_verifying)         parts.push(`<span class="count count-analyzing">${counts.h_verifying} verifying</span>`);
+      if (counts.h_awaiting_decisions) parts.push(`<span class="count count-awaiting">${counts.h_awaiting_decisions} awaiting decisions</span>`);
+      if (counts.h_tests_failed)      parts.push(`<span class="count count-errored">${counts.h_tests_failed} tests failed</span>`);
+      if (counts.h_ci_failed)         parts.push(`<span class="count count-errored">${counts.h_ci_failed} CI failed</span>`);
+      if (counts.h_complete)          parts.push(`<span class="count count-complete">${counts.h_complete} complete</span>`);
       if (counts.error)             parts.push(`<span class="count count-errored">${counts.error} error</span>`);
 
       return parts.length ? `<div class="header-summary">${parts.join('')}</div>` : '';
@@ -939,7 +939,7 @@
 
       // Determine action buttons
       let actions = '';
-      const isActive = workflow && ['analyzing', 'hardening', 'testing', 'fixing_tests', 'ci_checking', 'fixing_ci', 'verifying'].includes(workflow.status);
+      const isActive = workflow && ['h_analyzing', 'h_hardening', 'h_testing', 'h_fixing_tests', 'h_ci_checking', 'h_fixing_ci', 'h_verifying'].includes(workflow.status);
       const loading = loadingActions[c.name];
 
       if (loading) {
@@ -1000,7 +1000,7 @@
     function renderWorkflowDetail(workflow) {
       const name = workflow.name;
       const cs = getCtrlState(name);
-      const isDecisionPhase = workflow.status === 'awaiting_decisions';
+      const isDecisionPhase = workflow.status === 'h_awaiting_decisions';
       const allFindings = workflow.analysis?.findings || [];
       const blockers = allFindings.filter(f => isBlocker(f));
       const controllerFindings = allFindings.filter(f => !isBlocker(f));
@@ -1008,11 +1008,11 @@
 
       // Prompt copy buttons
       const promptButtons = [];
-      if (workflow.prompts?.analyze)   promptButtons.push(`<button class="small" onclick="copyPrompt('${escapeAttr(name)}', 'analyze')">Copy Analysis Prompt</button>`);
-      if (workflow.prompts?.harden)    promptButtons.push(`<button class="small" onclick="copyPrompt('${escapeAttr(name)}', 'harden')">Copy Harden Prompt</button>`);
-      if (workflow.prompts?.fix_tests) promptButtons.push(`<button class="small" onclick="copyPrompt('${escapeAttr(name)}', 'fix_tests')">Copy Fix Tests Prompt</button>`);
-      if (workflow.prompts?.fix_ci)    promptButtons.push(`<button class="small" onclick="copyPrompt('${escapeAttr(name)}', 'fix_ci')">Copy Fix CI Prompt</button>`);
-      if (workflow.prompts?.verify)    promptButtons.push(`<button class="small" onclick="copyPrompt('${escapeAttr(name)}', 'verify')">Copy Verify Prompt</button>`);
+      if (workflow.prompts?.h_analyze)   promptButtons.push(`<button class="small" onclick="copyPrompt('${escapeAttr(name)}', 'h_analyze')">Copy Analysis Prompt</button>`);
+      if (workflow.prompts?.h_harden)    promptButtons.push(`<button class="small" onclick="copyPrompt('${escapeAttr(name)}', 'h_harden')">Copy Harden Prompt</button>`);
+      if (workflow.prompts?.h_fix_tests) promptButtons.push(`<button class="small" onclick="copyPrompt('${escapeAttr(name)}', 'h_fix_tests')">Copy Fix Tests Prompt</button>`);
+      if (workflow.prompts?.h_fix_ci)    promptButtons.push(`<button class="small" onclick="copyPrompt('${escapeAttr(name)}', 'h_fix_ci')">Copy Fix CI Prompt</button>`);
+      if (workflow.prompts?.h_verify)    promptButtons.push(`<button class="small" onclick="copyPrompt('${escapeAttr(name)}', 'h_verify')">Copy Verify Prompt</button>`);
 
       let html = `
         <div class="detail-header">
@@ -1057,7 +1057,7 @@
 
           ${workflow.analysis?.notes ? `<div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;">${escapeHtml(workflow.analysis.notes)}</div>` : ''}
 
-          ${['awaiting_decisions', 'hardened', 'tested', 'tests_failed', 'ci_passed', 'ci_failed', 'complete'].includes(workflow.status) ? `
+          ${['h_awaiting_decisions', 'h_hardened', 'h_tested', 'h_tests_failed', 'h_ci_passed', 'h_ci_failed', 'h_complete'].includes(workflow.status) ? `
             <div class="ask-section">
               <input type="text" id="ask-input" placeholder="Ask a question about this controller..."
                 onkeydown="if(event.key==='Enter') askQuestion('${escapeAttr(name)}')" />
@@ -1068,7 +1068,7 @@
 
           ${workflow.test_results ? renderTestResults(name, workflow.test_results) : ''}
 
-          ${workflow.status === 'tests_failed' ? `
+          ${workflow.status === 'h_tests_failed' ? `
             <div style="margin-top: 0.5rem;">
               <button class="primary" onclick="retryTests('${escapeAttr(name)}')" ${loadingActions[name] === 'retry_tests' ? 'disabled' : ''}>${loadingActions[name] === 'retry_tests' ? 'Retrying...' : 'Retry Tests'}</button>
             </div>
@@ -1076,7 +1076,7 @@
 
           ${workflow.ci_results ? renderCIResults(name, workflow.ci_results) : ''}
 
-          ${workflow.status === 'ci_failed' ? `
+          ${workflow.status === 'h_ci_failed' ? `
             <div style="margin-top: 0.5rem;">
               <button class="primary" onclick="retryCi('${escapeAttr(name)}')" ${loadingActions[name] === 'retry_ci' ? 'disabled' : ''}>${loadingActions[name] === 'retry_ci' ? 'Retrying...' : 'Retry CI'}</button>
             </div>
@@ -1376,7 +1376,6 @@
           ${v.new_issues?.length ? `<div style="margin-top: 0.3rem; color: var(--red); font-size: 0.8rem;">New issues found: ${v.new_issues.length}</div>` : ''}
         </div>
         ${findingsAddressed.length ? renderFindingsAddressed(findingsAddressed, analysisFindings) : ''}
-        ${workflow.hardened?.hardened_source ? renderSourceViewer(name, workflow.hardened.hardened_source, workflow.path) : ''}
       `;
     }
 
@@ -1404,39 +1403,6 @@
       `;
     }
 
-    function renderSourceViewer(name, source, path) {
-      const cs = getCtrlState(name);
-      return `
-        <div class="source-viewer">
-          <div class="source-viewer-header" onclick="toggleSourceView('${escapeAttr(name)}')">
-            <span>${cs.sourceViewOpen ? '&#9662;' : '&#9656;'} Hardened source</span>
-            <span style="display:flex; gap:0.5rem; align-items:center;">
-              <span style="font-size:0.75rem; color:var(--text-muted);">Written to ${escapeHtml(path)}</span>
-              <button onclick="event.stopPropagation(); copyHardenedSource('${escapeAttr(name)}')">Copy</button>
-            </span>
-          </div>
-          ${cs.sourceViewOpen ? `<pre><code>${escapeHtml(source)}</code></pre>` : ''}
-        </div>
-      `;
-    }
-
-    function toggleSourceView(name) {
-      const cs = getCtrlState(name);
-      cs.sourceViewOpen = !cs.sourceViewOpen;
-      render();
-    }
-
-    function copyHardenedSource(name) {
-      const workflow = (pipeline.workflows || {})[name];
-      const source = workflow?.hardened?.hardened_source;
-      if (!source) return;
-      copyToClipboard(source).then(() => {
-        showToast('Copied hardened source');
-      }).catch(() => {
-        showToast('Failed to copy');
-      });
-    }
-
     async function copyPrompt(name, phase) {
       try {
         const res = await apiFetch(`/pipeline/${encodeURIComponent(name)}/prompts/${encodeURIComponent(phase)}`);
@@ -1450,13 +1416,13 @@
 
     function displayStatus(status) {
       const labels = {
-        'awaiting_decisions': 'awaiting decisions',
-        'fixing_tests': 'fixing tests',
-        'tests_failed': 'tests failed',
-        'ci_checking': 'CI checking',
-        'fixing_ci': 'fixing CI',
-        'ci_passed': 'CI passed',
-        'ci_failed': 'CI failed',
+        'h_awaiting_decisions': 'awaiting decisions',
+        'h_fixing_tests': 'fixing tests',
+        'h_tests_failed': 'tests failed',
+        'h_ci_checking': 'CI checking',
+        'h_fixing_ci': 'fixing CI',
+        'h_ci_passed': 'CI passed',
+        'h_ci_failed': 'CI failed',
       };
       return labels[status] || status;
     }

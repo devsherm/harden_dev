@@ -105,7 +105,7 @@ class Pipeline
       @mutex.synchronize do
         workflow = @state[:workflows][name] ||= build_workflow(entry)
         workflow[:analysis] = parsed
-        workflow[:status] = "awaiting_decisions"
+        workflow[:status] = "h_awaiting_decisions"
       end
     end
 
@@ -115,7 +115,7 @@ class Pipeline
       source_path = ctrl_name = nil
       @mutex.synchronize do
         workflow = @state[:workflows][name]
-        workflow[:status] = "analyzing"
+        workflow[:status] = "h_analyzing"
         workflow[:started_at] = Time.now.iso8601
         workflow[:error] = nil
         source_path = workflow[:full_path]
@@ -136,9 +136,9 @@ class Pipeline
         @mutex.synchronize do
           wf = @state[:workflows][name]
           wf[:analysis] = parsed
-          wf[:status] = "awaiting_decisions"
+          wf[:status] = "h_awaiting_decisions"
           @prompt_store[name] ||= {}
-          @prompt_store[name][:analyze] = prompt
+          @prompt_store[name][:h_analyze] = prompt
         end
       rescue => e
         @mutex.synchronize do
@@ -169,12 +169,12 @@ class Pipeline
         workflow = @state[:workflows][name]
 
         if workflow[:decision] && workflow[:decision]["action"] == "skip"
-          workflow[:status] = "skipped"
+          workflow[:status] = "h_skipped"
           workflow[:completed_at] = Time.now.iso8601
           return
         end
 
-        workflow[:status] = "hardening"
+        workflow[:status] = "h_hardening"
         source_path = workflow[:full_path]
         ctrl_name = workflow[:name]
         analysis_json = workflow[:analysis].to_json
@@ -184,26 +184,28 @@ class Pipeline
       begin
         source = File.read(source_path)
 
-        prompt = Prompts.harden(ctrl_name, source, analysis_json, decision)
+        ensure_sidecar_dir(source_path)
+        stg = staging_path(source_path)
+        FileUtils.rm_rf(stg)
+        FileUtils.mkdir_p(stg)
+
+        prompt = Prompts.harden(ctrl_name, source, analysis_json, decision, staging_dir: stg)
         result = claude_call(prompt)
         raise "Pipeline cancelled" if cancelled?
         parsed = parse_json_response(result)
 
         write_sidecar(source_path, "hardened.json", JSON.pretty_generate(parsed))
 
-        write_path = hardened_source_content = nil
         @mutex.synchronize do
           wf = @state[:workflows][name]
           wf[:original_source] = source
           wf[:hardened] = parsed
-          wf[:status] = "hardened"
-          write_path = wf[:full_path]
-          hardened_source_content = parsed["hardened_source"]
+          wf[:status] = "h_hardened"
           @prompt_store[name] ||= {}
-          @prompt_store[name][:harden] = prompt
+          @prompt_store[name][:h_harden] = prompt
         end
 
-        safe_write(write_path, hardened_source_content) if hardened_source_content
+        copy_from_staging(stg)
       rescue => e
         @mutex.synchronize do
           wf = @state[:workflows][name]
@@ -223,8 +225,8 @@ class Pipeline
       source_path = ctrl_name = nil
       @mutex.synchronize do
         workflow = @state[:workflows][name]
-        return unless workflow[:status] == "hardened"
-        workflow[:status] = "testing"
+        return unless workflow[:status] == "h_hardened"
+        workflow[:status] = "h_testing"
         source_path = workflow[:full_path]
         ctrl_name = workflow[:name]
       end
@@ -252,12 +254,17 @@ class Pipeline
             analysis_json = nil
             @mutex.synchronize do
               wf = @state[:workflows][name]
-              wf[:status] = "fixing_tests"
+              wf[:status] = "h_fixing_tests"
               analysis_json = wf[:analysis].to_json
             end
 
             hardened_source = File.read(source_path)
-            prompt = Prompts.fix_tests(ctrl_name, hardened_source, output, analysis_json)
+
+            stg = staging_path(source_path)
+            FileUtils.rm_rf(stg)
+            FileUtils.mkdir_p(stg)
+
+            prompt = Prompts.fix_tests(ctrl_name, hardened_source, output, analysis_json, staging_dir: stg)
 
             fix_result = claude_call(prompt)
             raise "Pipeline cancelled" if cancelled?
@@ -265,17 +272,15 @@ class Pipeline
 
             @mutex.synchronize do
               @prompt_store[name] ||= {}
-              @prompt_store[name][:fix_tests] = prompt
+              @prompt_store[name][:h_fix_tests] = prompt
             end
 
-            if parsed["hardened_source"]
-              safe_write(source_path, parsed["hardened_source"])
-            end
+            copy_from_staging(stg)
 
             # Re-run tests
             @mutex.synchronize do
               wf = @state[:workflows][name]
-              wf[:status] = "testing"
+              wf[:status] = "h_testing"
             end
 
             output, passed_run = spawn_with_timeout(*test_cmd, timeout: COMMAND_TIMEOUT, chdir: @rails_root)
@@ -304,9 +309,9 @@ class Pipeline
           wf = @state[:workflows][name]
           wf[:test_results] = test_results
           if passed
-            wf[:status] = "tested"
+            wf[:status] = "h_tested"
           else
-            wf[:status] = "tests_failed"
+            wf[:status] = "h_tests_failed"
             add_error("Tests still failing for #{name} after #{attempts.length} attempt(s)")
             return
           end
@@ -330,8 +335,8 @@ class Pipeline
       source_path = ctrl_name = controller_relative = nil
       @mutex.synchronize do
         workflow = @state[:workflows][name]
-        return unless workflow[:status] == "tested"
-        workflow[:status] = "ci_checking"
+        return unless workflow[:status] == "h_tested"
+        workflow[:status] = "h_ci_checking"
         source_path = workflow[:full_path]
         ctrl_name = workflow[:name]
         controller_relative = workflow[:path]
@@ -348,7 +353,7 @@ class Pipeline
             analysis_json = nil
             @mutex.synchronize do
               wf = @state[:workflows][name]
-              wf[:status] = "fixing_ci"
+              wf[:status] = "h_fixing_ci"
               analysis_json = wf[:analysis].to_json
             end
 
@@ -357,7 +362,12 @@ class Pipeline
             }.join("\n\n")
 
             hardened_source = File.read(source_path)
-            prompt = Prompts.fix_ci(ctrl_name, hardened_source, failed_output, analysis_json)
+
+            stg = staging_path(source_path)
+            FileUtils.rm_rf(stg)
+            FileUtils.mkdir_p(stg)
+
+            prompt = Prompts.fix_ci(ctrl_name, hardened_source, failed_output, analysis_json, staging_dir: stg)
 
             fix_result = claude_call(prompt)
             raise "Pipeline cancelled" if cancelled?
@@ -365,12 +375,10 @@ class Pipeline
 
             @mutex.synchronize do
               @prompt_store[name] ||= {}
-              @prompt_store[name][:fix_ci] = prompt
+              @prompt_store[name][:h_fix_ci] = prompt
             end
 
-            if parsed["hardened_source"]
-              safe_write(source_path, parsed["hardened_source"])
-            end
+            copy_from_staging(stg)
 
             fix_attempts << {
               attempt: i + 1,
@@ -380,7 +388,7 @@ class Pipeline
 
             @mutex.synchronize do
               wf = @state[:workflows][name]
-              wf[:status] = "ci_checking"
+              wf[:status] = "h_ci_checking"
             end
 
             checks = run_all_ci_checks(controller_relative)
@@ -402,9 +410,9 @@ class Pipeline
           wf = @state[:workflows][name]
           wf[:ci_results] = ci_results
           if passed
-            wf[:status] = "ci_passed"
+            wf[:status] = "h_ci_passed"
           else
-            wf[:status] = "ci_failed"
+            wf[:status] = "h_ci_failed"
             add_error("CI checks still failing for #{name} after #{fix_attempts.length} fix attempt(s)")
             return
           end
@@ -428,8 +436,8 @@ class Pipeline
       source_path = ctrl_name = original_source = hardened_source = analysis_json = nil
       @mutex.synchronize do
         workflow = @state[:workflows][name]
-        return unless workflow[:status] == "ci_passed"
-        workflow[:status] = "verifying"
+        return unless workflow[:status] == "h_ci_passed"
+        workflow[:status] = "h_verifying"
         source_path = workflow[:full_path]
         ctrl_name = workflow[:name]
         original_source = workflow[:original_source]
@@ -449,10 +457,10 @@ class Pipeline
         @mutex.synchronize do
           wf = @state[:workflows][name]
           wf[:verification] = parsed
-          wf[:status] = "complete"
+          wf[:status] = "h_complete"
           wf[:completed_at] = Time.now.iso8601
           @prompt_store[name] ||= {}
-          @prompt_store[name][:verify] = prompt
+          @prompt_store[name][:h_verify] = prompt
         end
       rescue => e
         @mutex.synchronize do

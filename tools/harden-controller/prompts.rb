@@ -50,7 +50,7 @@ module Prompts
   end
 
   # Phase 3: Apply hardening based on analysis and human decisions
-  def self.harden(controller_name, controller_source, analysis_json, decision)
+  def self.harden(controller_name, controller_source, analysis_json, decision, staging_dir:)
     <<~PROMPT
       You are a Rails security hardening specialist. Apply the approved hardening changes to this controller.
 
@@ -70,7 +70,14 @@ module Prompts
 
       ## Your Task
 
-      Apply the hardening changes. Write the complete hardened controller file.
+      Apply the hardening changes. Write the modified files to the staging directory at:
+        #{staging_dir}
+
+      The staging directory mirrors the app directory structure. For example, to modify
+      `app/controllers/blog/posts_controller.rb`, write to:
+        #{staging_dir}/app/controllers/blog/posts_controller.rb
+
+      Create any necessary subdirectories within the staging directory.
 
       ## Output Format
 
@@ -79,6 +86,10 @@ module Prompts
       {
         "controller": "#{controller_name}",
         "status": "hardened",
+        "summary": "Brief description of changes made",
+        "files_modified": [
+          { "path": "app/controllers/blog/posts_controller.rb", "action": "modified" }
+        ],
         "changes_applied": [
           {
             "finding_id": "finding_001",
@@ -86,14 +97,13 @@ module Prompts
             "lines_affected": "Brief description"
           }
         ],
-        "hardened_source": "THE COMPLETE HARDENED CONTROLLER SOURCE CODE",
         "warnings": ["Any caveats or things the human should review"]
       }
     PROMPT
   end
 
   # Phase 3.5: Fix failing tests after hardening
-  def self.fix_tests(controller_name, hardened_source, test_output, analysis_json)
+  def self.fix_tests(controller_name, hardened_source, test_output, analysis_json, staging_dir:)
     <<~PROMPT
       You are a Rails security hardening specialist. The hardened controller below causes test failures.
       Fix the controller so tests pass while preserving as many hardening changes as possible.
@@ -121,6 +131,14 @@ module Prompts
       2. Identify which hardening changes broke the tests
       3. Fix the controller so tests pass
       4. Preserve as many security hardening changes as possible — only revert what is necessary to fix tests
+      5. Write the modified files to the staging directory at:
+           #{staging_dir}
+
+      The staging directory mirrors the app directory structure. For example, to modify
+      `app/controllers/blog/posts_controller.rb`, write to:
+        #{staging_dir}/app/controllers/blog/posts_controller.rb
+
+      Create any necessary subdirectories within the staging directory.
 
       ## Output Format
 
@@ -129,7 +147,9 @@ module Prompts
       {
         "controller": "#{controller_name}",
         "status": "fixed",
-        "hardened_source": "THE COMPLETE FIXED CONTROLLER SOURCE CODE",
+        "files_modified": [
+          { "path": "app/controllers/blog/posts_controller.rb", "action": "modified" }
+        ],
         "fixes_applied": [
           {
             "description": "What was changed to fix the test failure",
@@ -143,7 +163,7 @@ module Prompts
   end
 
   # Phase 3.75: Fix CI failures after hardening
-  def self.fix_ci(controller_name, hardened_source, ci_output, analysis_json)
+  def self.fix_ci(controller_name, hardened_source, ci_output, analysis_json, staging_dir:)
     <<~PROMPT
       You are a Rails security hardening specialist. The hardened controller below causes CI check failures.
       Fix the controller so CI checks pass while preserving as many hardening changes as possible.
@@ -171,6 +191,14 @@ module Prompts
       2. Fix RuboCop and Brakeman issues in the controller code
       3. Note that bundler-audit and importmap-audit failures are NOT fixable from controller code — list them as unfixable
       4. Preserve as many security hardening changes as possible — only revert what is necessary to fix CI
+      5. Write the modified files to the staging directory at:
+           #{staging_dir}
+
+      The staging directory mirrors the app directory structure. For example, to modify
+      `app/controllers/blog/posts_controller.rb`, write to:
+        #{staging_dir}/app/controllers/blog/posts_controller.rb
+
+      Create any necessary subdirectories within the staging directory.
 
       ## Output Format
 
@@ -179,7 +207,9 @@ module Prompts
       {
         "controller": "#{controller_name}",
         "status": "fixed",
-        "hardened_source": "THE COMPLETE FIXED CONTROLLER SOURCE CODE",
+        "files_modified": [
+          { "path": "app/controllers/blog/posts_controller.rb", "action": "modified" }
+        ],
         "fixes_applied": [
           {
             "description": "What was changed to fix the CI failure",

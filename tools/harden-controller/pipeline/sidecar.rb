@@ -30,6 +30,25 @@ class Pipeline
       File.write(path, content)
     end
 
+    # Construct the staging directory path within the sidecar.
+    # Returns: /path/to/.harden/<controller_name>/staging
+    def staging_path(target_path)
+      File.join(File.dirname(target_path), @sidecar_dir, File.basename(target_path, ".rb"), "staging")
+    end
+
+    # Walk the staging directory and copy each file to its real path via safe_write.
+    # staging_dir mirrors the app directory structure:
+    #   staging/app/controllers/posts_controller.rb → app/controllers/posts_controller.rb
+    def copy_from_staging(staging_dir)
+      Dir.glob(File.join(staging_dir, "**", "*")).each do |staged_file|
+        next if File.directory?(staged_file)
+        relative = staged_file.sub("#{staging_dir}/", "")
+        real_path = File.join(@rails_root, relative)
+        FileUtils.mkdir_p(File.dirname(real_path))
+        safe_write(real_path, File.read(staged_file))
+      end
+    end
+
     def derive_test_path(target_path)
       @test_path_resolver.call(target_path, @rails_root)
     end

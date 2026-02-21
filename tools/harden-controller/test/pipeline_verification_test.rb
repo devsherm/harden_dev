@@ -12,7 +12,7 @@ class PipelineVerificationTest < OrchestrationTestCase
 
   def test_happy_path
     seed_workflow(@ctrl_name,
-                  status: "ci_passed",
+                  status: "h_ci_passed",
                   analysis: analysis_fixture,
                   original_source: CONTROLLER_SOURCE,
                   hardened: hardened_fixture)
@@ -21,7 +21,7 @@ class PipelineVerificationTest < OrchestrationTestCase
     @pipeline.run_verification(@ctrl_name)
 
     wf = workflow_state(@ctrl_name)
-    assert_equal "complete", wf[:status]
+    assert_equal "h_complete", wf[:status]
     assert wf[:completed_at]
     assert_equal "accept", wf[:verification]["recommendation"]
 
@@ -30,13 +30,13 @@ class PipelineVerificationTest < OrchestrationTestCase
     assert_equal "accept", sidecar["recommendation"]
 
     # Prompt stored
-    prompt = @pipeline.get_prompt(@ctrl_name, :verify)
+    prompt = @pipeline.get_prompt(@ctrl_name, :h_verify)
     assert_includes prompt, @ctrl_name
   end
 
   def test_error_sets_error_status
     seed_workflow(@ctrl_name,
-                  status: "ci_passed",
+                  status: "h_ci_passed",
                   analysis: analysis_fixture,
                   original_source: CONTROLLER_SOURCE,
                   hardened: hardened_fixture)
@@ -63,7 +63,7 @@ class PipelineVerificationTest < OrchestrationTestCase
 
   def test_invalid_json_sets_error
     seed_workflow(@ctrl_name,
-                  status: "ci_passed",
+                  status: "h_ci_passed",
                   analysis: analysis_fixture,
                   original_source: CONTROLLER_SOURCE,
                   hardened: hardened_fixture)
@@ -81,7 +81,7 @@ class PipelineVerificationTest < OrchestrationTestCase
 
   def test_prompt_includes_original_and_hardened
     seed_workflow(@ctrl_name,
-                  status: "ci_passed",
+                  status: "h_ci_passed",
                   analysis: analysis_fixture,
                   original_source: CONTROLLER_SOURCE,
                   hardened: hardened_fixture)

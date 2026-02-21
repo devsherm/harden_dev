@@ -12,20 +12,21 @@ class PipelineHardeningTest < OrchestrationTestCase
 
   def test_happy_path_approve
     seed_workflow(@ctrl_name,
-                  status: "awaiting_decisions",
+                  status: "h_awaiting_decisions",
                   analysis: analysis_fixture,
                   decision: decision_fixture(action: "approve"))
     stub_claude_call(hardened_fixture)
+    stub_copy_from_staging(@ctrl_path)
     testing_recorder = capture_chained_call(:run_testing)
 
     @pipeline.run_hardening(@ctrl_name)
 
     wf = workflow_state(@ctrl_name)
-    assert_equal "hardened", wf[:status]
+    assert_equal "h_hardened", wf[:status]
     assert_equal CONTROLLER_SOURCE, wf[:original_source]
     assert_equal "hardened", wf[:hardened]["status"]
 
-    # Controller file rewritten
+    # Controller file rewritten by copy_from_staging stub
     assert_equal HARDENED_SOURCE, File.read(@ctrl_path)
 
     # Sidecar written
@@ -40,7 +41,7 @@ class PipelineHardeningTest < OrchestrationTestCase
 
   def test_skip_decision
     seed_workflow(@ctrl_name,
-                  status: "awaiting_decisions",
+                  status: "h_awaiting_decisions",
                   analysis: analysis_fixture,
                   decision: decision_fixture(action: "skip"))
     stub_claude_call(hardened_fixture)
@@ -49,7 +50,7 @@ class PipelineHardeningTest < OrchestrationTestCase
     @pipeline.run_hardening(@ctrl_name)
 
     wf = workflow_state(@ctrl_name)
-    assert_equal "skipped", wf[:status]
+    assert_equal "h_skipped", wf[:status]
     assert wf[:completed_at]
 
     assert_empty @claude_calls
@@ -58,7 +59,7 @@ class PipelineHardeningTest < OrchestrationTestCase
 
   def test_error_sets_error_status
     seed_workflow(@ctrl_name,
-                  status: "awaiting_decisions",
+                  status: "h_awaiting_decisions",
                   analysis: analysis_fixture,
                   decision: decision_fixture(action: "approve"))
     stub_claude_call_failure("Hardening exploded")
@@ -76,21 +77,22 @@ class PipelineHardeningTest < OrchestrationTestCase
     refute testing_recorder.called?
   end
 
-  def test_no_hardened_source_skips_file_write
-    fixture = hardened_fixture.tap { |h| h.delete("hardened_source") }
+  def test_empty_staging_dir_leaves_file_unchanged
     seed_workflow(@ctrl_name,
-                  status: "awaiting_decisions",
+                  status: "h_awaiting_decisions",
                   analysis: analysis_fixture,
                   decision: decision_fixture(action: "approve"))
-    stub_claude_call(fixture)
+    stub_claude_call(hardened_fixture)
+    # Stub copy_from_staging to do nothing (agent wrote nothing to staging)
+    @pipeline.define_singleton_method(:copy_from_staging) { |_staging_dir| }
     testing_recorder = capture_chained_call(:run_testing)
 
     @pipeline.run_hardening(@ctrl_name)
 
     wf = workflow_state(@ctrl_name)
-    assert_equal "hardened", wf[:status]
+    assert_equal "h_hardened", wf[:status]
 
-    # Controller file unchanged (no hardened_source in response)
+    # Controller file unchanged (copy_from_staging was a no-op)
     assert_equal CONTROLLER_SOURCE, File.read(@ctrl_path)
 
     # Still chains to testing
@@ -99,22 +101,23 @@ class PipelineHardeningTest < OrchestrationTestCase
 
   def test_submit_decision_triggers_hardening
     seed_workflow(@ctrl_name,
-                  status: "awaiting_decisions",
+                  status: "h_awaiting_decisions",
                   analysis: analysis_fixture)
     stub_claude_call(hardened_fixture)
+    stub_copy_from_staging(@ctrl_path)
     testing_recorder = capture_chained_call(:run_testing)
 
     @pipeline.submit_decision(@ctrl_name, decision_fixture(action: "approve"))
 
     wf = workflow_state(@ctrl_name)
     assert_equal "approve", wf[:decision]["action"]
-    assert_equal "hardened", wf[:status]
+    assert_equal "h_hardened", wf[:status]
     assert testing_recorder.called?
   end
 
   def test_cancelled_pipeline_sets_error
     seed_workflow(@ctrl_name,
-                  status: "awaiting_decisions",
+                  status: "h_awaiting_decisions",
                   analysis: analysis_fixture,
                   decision: decision_fixture(action: "approve"))
     response = JSON.generate(hardened_fixture)
@@ -124,6 +127,7 @@ class PipelineHardeningTest < OrchestrationTestCase
       @cancelled = true
       response
     end
+    @pipeline.define_singleton_method(:copy_from_staging) { |_staging_dir| }
     testing_recorder = capture_chained_call(:run_testing)
 
     @pipeline.run_hardening(@ctrl_name)

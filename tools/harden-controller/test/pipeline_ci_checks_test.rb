@@ -11,14 +11,14 @@ class PipelineCiChecksTest < OrchestrationTestCase
   end
 
   def test_all_pass
-    seed_workflow(@ctrl_name, status: "tested", analysis: analysis_fixture)
+    seed_workflow(@ctrl_name, status: "h_tested", analysis: analysis_fixture)
     stub_ci_checks_pass
     verification_recorder = capture_chained_call(:run_verification)
 
     @pipeline.run_ci_checks(@ctrl_name)
 
     wf = workflow_state(@ctrl_name)
-    assert_equal "ci_passed", wf[:status]
+    assert_equal "h_ci_passed", wf[:status]
     assert wf[:ci_results][:passed]
 
     # Raw checks array preserved for UI display
@@ -38,31 +38,33 @@ class PipelineCiChecksTest < OrchestrationTestCase
   end
 
   def test_fail_then_fix_succeeds
-    seed_workflow(@ctrl_name, status: "tested", analysis: analysis_fixture)
+    seed_workflow(@ctrl_name, status: "h_tested", analysis: analysis_fixture)
     stub_ci_checks_sequence([failing_ci_results, passing_ci_results])
     stub_claude_call(fix_ci_fixture)
+    stub_copy_from_staging(@ctrl_path)
     verification_recorder = capture_chained_call(:run_verification)
 
     @pipeline.run_ci_checks(@ctrl_name)
 
     wf = workflow_state(@ctrl_name)
-    assert_equal "ci_passed", wf[:status]
+    assert_equal "h_ci_passed", wf[:status]
     assert_equal 1, wf[:ci_results][:fix_attempts].length
 
     assert verification_recorder.called?
   end
 
   def test_all_fix_attempts_fail
-    seed_workflow(@ctrl_name, status: "tested", analysis: analysis_fixture)
+    seed_workflow(@ctrl_name, status: "h_tested", analysis: analysis_fixture)
     # 1 initial + MAX_CI_FIX_ATTEMPTS(2) retries = 3 CI check calls, all fail
     stub_ci_checks_sequence([failing_ci_results, failing_ci_results, failing_ci_results])
     stub_claude_call(fix_ci_fixture)
+    stub_copy_from_staging(@ctrl_path)
     verification_recorder = capture_chained_call(:run_verification)
 
     @pipeline.run_ci_checks(@ctrl_name)
 
     wf = workflow_state(@ctrl_name)
-    assert_equal "ci_failed", wf[:status]
+    assert_equal "h_ci_failed", wf[:status]
     assert_equal 2, wf[:ci_results][:fix_attempts].length
     refute wf[:ci_results][:passed]
 
@@ -82,7 +84,7 @@ class PipelineCiChecksTest < OrchestrationTestCase
   end
 
   def test_error_sets_error_status
-    seed_workflow(@ctrl_name, status: "tested", analysis: analysis_fixture)
+    seed_workflow(@ctrl_name, status: "h_tested", analysis: analysis_fixture)
     @pipeline.define_singleton_method(:run_all_ci_checks) do |controller_relative|
       raise RuntimeError, "CI exploded"
     end
@@ -98,9 +100,10 @@ class PipelineCiChecksTest < OrchestrationTestCase
 
   def test_fix_rewrites_controller
     fixed_source = "class Fixed; end"
-    seed_workflow(@ctrl_name, status: "tested", analysis: analysis_fixture)
+    seed_workflow(@ctrl_name, status: "h_tested", analysis: analysis_fixture)
     stub_ci_checks_sequence([failing_ci_results, passing_ci_results])
-    stub_claude_call(fix_ci_fixture(fixed_source))
+    stub_claude_call(fix_ci_fixture)
+    stub_copy_from_staging(@ctrl_path, fixed_source)
     capture_chained_call(:run_verification)
 
     @pipeline.run_ci_checks(@ctrl_name)

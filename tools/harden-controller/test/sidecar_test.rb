@@ -181,6 +181,102 @@ class SidecarTest < PipelineTestCase
     pipeline&.shutdown(timeout: 1) rescue nil
   end
 
+  # ── staging_path tests ─────────────────────────────────────
+
+  def test_staging_path_returns_staging_subdir
+    ctrl_path = File.join(@controllers_dir, "posts_controller.rb")
+    result = @pipeline.send(:staging_path, ctrl_path)
+    expected = File.join(@controllers_dir, ".harden", "posts_controller", "staging")
+    assert_equal expected, result
+  end
+
+  def test_staging_path_with_custom_sidecar_dir
+    pipeline = Pipeline.new(rails_root: @tmpdir, sidecar_dir: ".review")
+    ctrl_path = File.join(@controllers_dir, "posts_controller.rb")
+    result = pipeline.send(:staging_path, ctrl_path)
+    assert_includes result, "/.review/"
+    assert result.end_with?("/staging")
+  ensure
+    pipeline&.shutdown(timeout: 1) rescue nil
+  end
+
+  # ── copy_from_staging tests ────────────────────────────────
+
+  def test_copy_from_staging_copies_files_to_real_paths
+    ctrl_path = File.join(@controllers_dir, "posts_controller.rb")
+    File.write(ctrl_path, "# original")
+
+    staging_dir = Dir.mktmpdir("staging-")
+    begin
+      staged_file_dir = File.join(staging_dir, "app", "controllers", "blog")
+      FileUtils.mkdir_p(staged_file_dir)
+      File.write(File.join(staged_file_dir, "posts_controller.rb"), "# hardened")
+
+      @pipeline.send(:copy_from_staging, staging_dir)
+
+      assert_equal "# hardened", File.read(ctrl_path)
+    ensure
+      FileUtils.rm_rf(staging_dir)
+    end
+  end
+
+  def test_copy_from_staging_copies_multiple_files
+    ctrl_path = File.join(@controllers_dir, "posts_controller.rb")
+    comments_path = File.join(@controllers_dir, "comments_controller.rb")
+    File.write(ctrl_path, "# original posts")
+    File.write(comments_path, "# original comments")
+
+    staging_dir = Dir.mktmpdir("staging-")
+    begin
+      staged_dir = File.join(staging_dir, "app", "controllers", "blog")
+      FileUtils.mkdir_p(staged_dir)
+      File.write(File.join(staged_dir, "posts_controller.rb"), "# hardened posts")
+      File.write(File.join(staged_dir, "comments_controller.rb"), "# hardened comments")
+
+      @pipeline.send(:copy_from_staging, staging_dir)
+
+      assert_equal "# hardened posts", File.read(ctrl_path)
+      assert_equal "# hardened comments", File.read(comments_path)
+    ensure
+      FileUtils.rm_rf(staging_dir)
+    end
+  end
+
+  def test_copy_from_staging_empty_dir_is_noop
+    ctrl_path = File.join(@controllers_dir, "posts_controller.rb")
+    File.write(ctrl_path, "# original")
+
+    staging_dir = Dir.mktmpdir("staging-")
+    begin
+      @pipeline.send(:copy_from_staging, staging_dir)
+
+      assert_equal "# original", File.read(ctrl_path)
+    ensure
+      FileUtils.rm_rf(staging_dir)
+    end
+  end
+
+  def test_copy_from_staging_rejects_paths_outside_allowed
+    staging_dir = Dir.mktmpdir("staging-")
+    begin
+      # Stage a file that resolves outside app/controllers
+      staged_dir = File.join(staging_dir, "config")
+      FileUtils.mkdir_p(staged_dir)
+      File.write(File.join(staged_dir, "secrets.yml"), "secret: value")
+
+      # Also create the target directory so realpath can resolve it
+      config_dir = File.join(@tmpdir, "config")
+      FileUtils.mkdir_p(config_dir)
+
+      err = assert_raises(RuntimeError) do
+        @pipeline.send(:copy_from_staging, staging_dir)
+      end
+      assert_match(/escapes allowed directories/i, err.message)
+    ensure
+      FileUtils.rm_rf(staging_dir)
+    end
+  end
+
   # ── Custom test_path_resolver tests ────────────────────────
 
   def test_custom_test_path_resolver

@@ -17,7 +17,7 @@ class PipelineAnalysisTest < OrchestrationTestCase
     @pipeline.run_analysis(@ctrl_name)
 
     wf = workflow_state(@ctrl_name)
-    assert_equal "awaiting_decisions", wf[:status]
+    assert_equal "h_awaiting_decisions", wf[:status]
     assert_equal 2, wf[:analysis]["findings"].length
     assert_equal "high", wf[:analysis]["overall_risk"]
 
@@ -27,7 +27,7 @@ class PipelineAnalysisTest < OrchestrationTestCase
     assert_equal 2, sidecar["findings"].length
 
     # Prompt stored
-    prompt = @pipeline.get_prompt(@ctrl_name, :analyze)
+    prompt = @pipeline.get_prompt(@ctrl_name, :h_analyze)
     assert_includes prompt, @ctrl_name
   end
 
@@ -92,7 +92,7 @@ class PipelineAnalysisTest < OrchestrationTestCase
     @pipeline.load_existing_analysis(@ctrl_name)
 
     wf = workflow_state(@ctrl_name)
-    assert_equal "awaiting_decisions", wf[:status]
+    assert_equal "h_awaiting_decisions", wf[:status]
     assert_equal 2, wf[:analysis]["findings"].length
 
     # No claude call should have been made
@@ -109,7 +109,7 @@ class PipelineAnalysisTest < OrchestrationTestCase
     @pipeline.run_analysis(@ctrl_name)
 
     wf = workflow_state(@ctrl_name)
-    assert_equal "awaiting_decisions", wf[:status]
+    assert_equal "h_awaiting_decisions", wf[:status]
     assert_equal 0, wf[:analysis]["findings"].length
     assert_equal "low", wf[:analysis]["overall_risk"]
   end
@@ -126,7 +126,7 @@ class PipelineAnalysisTest < OrchestrationTestCase
     @pipeline.run_analysis(@ctrl_name)
 
     wf = workflow_state(@ctrl_name)
-    assert_equal "awaiting_decisions", wf[:status]
+    assert_equal "h_awaiting_decisions", wf[:status]
     # Core fields still correct
     assert_equal 2, wf[:analysis]["findings"].length
     assert_equal "high", wf[:analysis]["overall_risk"]
@@ -140,7 +140,7 @@ class PipelineAnalysisTest < OrchestrationTestCase
     @pipeline.run_analysis(@ctrl_name)
 
     wf = workflow_state(@ctrl_name)
-    assert_equal "awaiting_decisions", wf[:status]
+    assert_equal "h_awaiting_decisions", wf[:status]
     assert_nil wf[:analysis]["overall_risk"]
     assert_equal 2, wf[:analysis]["findings"].length
   end

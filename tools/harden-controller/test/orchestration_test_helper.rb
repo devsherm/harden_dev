@@ -141,15 +141,18 @@ class OrchestrationTestCase < PipelineTestCase
     }
   end
 
-  def hardened_fixture(source = HARDENED_SOURCE)
+  def hardened_fixture
     {
       "controller" => "posts_controller",
       "status" => "hardened",
+      "summary" => "Added authorization checks",
+      "files_modified" => [
+        { "path" => "app/controllers/blog/posts_controller.rb", "action" => "modified" }
+      ],
       "changes_applied" => [
         { "finding_id" => "finding_001", "action_taken" => "Added authorization",
           "lines_affected" => "1-3" }
       ],
-      "hardened_source" => source,
       "warnings" => []
     }
   end
@@ -158,11 +161,13 @@ class OrchestrationTestCase < PipelineTestCase
     { "action" => action }
   end
 
-  def fix_tests_fixture(source = HARDENED_SOURCE)
+  def fix_tests_fixture
     {
       "controller" => "posts_controller",
       "status" => "fixed",
-      "hardened_source" => source,
+      "files_modified" => [
+        { "path" => "app/controllers/blog/posts_controller.rb", "action" => "modified" }
+      ],
       "fixes_applied" => [
         { "description" => "Fixed test issue", "hardening_preserved" => true, "notes" => "" }
       ],
@@ -170,11 +175,13 @@ class OrchestrationTestCase < PipelineTestCase
     }
   end
 
-  def fix_ci_fixture(source = HARDENED_SOURCE)
+  def fix_ci_fixture
     {
       "controller" => "posts_controller",
       "status" => "fixed",
-      "hardened_source" => source,
+      "files_modified" => [
+        { "path" => "app/controllers/blog/posts_controller.rb", "action" => "modified" }
+      ],
       "fixes_applied" => [
         { "description" => "Fixed CI issue", "check" => "rubocop",
           "hardening_preserved" => true, "notes" => "" }
@@ -221,6 +228,28 @@ class OrchestrationTestCase < PipelineTestCase
   def stub_claude_call_failure(msg)
     @pipeline.define_singleton_method(:claude_call) do |prompt|
       raise RuntimeError, msg
+    end
+  end
+
+  # Stub copy_from_staging to write HARDENED_SOURCE to the controller path.
+  # This simulates what the real copy_from_staging does when the agent wrote
+  # the file to the staging directory.
+  def stub_copy_from_staging(ctrl_path, source = HARDENED_SOURCE)
+    path = ctrl_path
+    content = source
+    @pipeline.define_singleton_method(:copy_from_staging) do |staging_dir|
+      File.write(path, content)
+    end
+  end
+
+  # Stub copy_from_staging with a sequence of source contents (one per call).
+  def stub_copy_from_staging_sequence(ctrl_path, sources)
+    path = ctrl_path
+    idx = 0
+    mutex = Mutex.new
+    @pipeline.define_singleton_method(:copy_from_staging) do |staging_dir|
+      i = mutex.synchronize { idx.tap { idx += 1 } }
+      File.write(path, sources[i] || sources.last)
     end
   end
 

@@ -7,7 +7,7 @@ require "securerandom"
 require_relative "prompts"
 
 class Pipeline
-  ACTIVE_STATUSES = %w[analyzing hardening testing fixing_tests ci_checking fixing_ci verifying].freeze
+  ACTIVE_STATUSES = %w[h_analyzing h_hardening h_testing h_fixing_tests h_ci_checking h_fixing_ci h_verifying].freeze
   CLAUDE_TIMEOUT = 120
   COMMAND_TIMEOUT = 60
   MAX_QUERIES = 50
@@ -65,6 +65,11 @@ class Pipeline
         entry = @state[:controllers].find { |c| c[:name] == name }
         return [false, "Controller not found: #{name}"] unless entry
         @state[:workflows][name] = build_workflow(entry.dup).merge(status: to, error: nil, started_at: Time.now.iso8601)
+      when Array
+        return [false, "No workflow for #{name}"] unless wf
+        return [false, "#{name} is #{status}, expected one of #{guard.join(', ')}"] unless guard.map(&:to_s).include?(status)
+        wf[:status] = to
+        wf[:error] = nil
       else
         return [false, "No workflow for #{name}"] unless wf
         return [false, "#{name} is #{status}, expected #{guard}"] unless status == guard.to_s
@@ -170,6 +175,7 @@ class Pipeline
       path: entry[:path],
       full_path: entry[:full_path],
       status: "pending",
+      mode: "hardening",
       analysis: nil,
       decision: nil,
       hardened: nil,
