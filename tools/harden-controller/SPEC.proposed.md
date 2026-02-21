@@ -29,7 +29,8 @@ The architecture is task-agnostic — both modes use the same discover-analyze-d
 | **Write target** | A specific file path that a batch's `claude -p` agent will modify (enhance mode). Declared during batch planning, enforced by safe_write. |
 | **Contention tier** | A classification (app, module, controller) describing how many agents a file's write lock affects (enhance mode). A mental model for operators, not a system concept. |
 | **Query** | An ad-hoc question or finding explanation request. Dispatched to `claude -p` in a background thread; results delivered via SSE. |
-| **Safe write** | Path-validated file write. Rejects writes outside `allowed_write_paths` and resolves symlinks to prevent traversal. In enhance mode, also enforces lock grant coverage. |
+| **Staging directory** | A temporary directory within the sidecar (e.g., `.harden/<ctrl>/staging/` or `.enhance/<ctrl>/<batch>/staging/`) where `claude -p` agents write modified files. The pipeline copies from staging to real paths via `safe_write`, enabling pre-write grant enforcement. Both modes use this pattern. |
+| **Safe write** | Path-validated file write. Rejects writes outside `allowed_write_paths` and resolves symlinks to prevent traversal. In enhance mode, also enforces lock grant coverage. Operates on the copy step from staging to real paths — agents never write directly to app code. |
 | **Try transition** | Atomic state machine gate. Checks a guard condition under mutex and transitions workflow status, preventing double-starts. |
 
 ## Architecture
@@ -50,7 +51,7 @@ discover → h_analyzing → h_awaiting_decisions
       └──→ h_tests_failed (retry available)
 ```
 
-Discovery is global (one pass over the entire `discovery_glob`). All subsequent phases operate per-controller. The phase chain from `h_hardening` through `h_verifying` executes sequentially within a single thread per controller — `run_hardening` calls `run_testing`, which calls `run_ci_checks`, which calls `run_verification`. The `h_awaiting_decisions` phase is a human gate that breaks this chain.
+Discovery is global (one pass over the entire `discovery_glob`). All subsequent phases operate per-controller. The phase chain from `h_hardening` through `h_verifying` executes sequentially within a single thread per controller — `run_hardening` calls `run_testing`, which calls `run_ci_checks`, which calls `run_verification`. The `h_awaiting_decisions` phase is a human gate that breaks this chain. All write phases use the staging→copy pattern (see Staging Write Pattern).
 
 When a controller reaches `h_complete`, it becomes eligible for enhance mode. The operator starts enhance analysis via the UI — the transition is not automatic.
 
@@ -102,9 +103,9 @@ Enhance mode phases operate at two granularities: phases through `e_awaiting_bat
 |---|---|---|---|---|---|---|
 | E0 | Analyze | Controller | Parallel | No | No | Intent analysis + research topics |
 | E1 | Research | Controller | Human gate + async API | No | Yes (per-topic: API or paste or reject) | Research results |
-| E2 | Extract | Controller | Parallel | No | No | POSSIBLE items |
-| E3 | Synthesize | Controller | Parallel | No | No | READY items + ratings |
-| E4 | Audit | Controller | Parallel | No | No | Annotated READY items |
+| E2 | Extract | Controller | Chained† | No | No | POSSIBLE items |
+| E3 | Synthesize | Controller | Chained† | No | No | READY items + ratings |
+| E4 | Audit | Controller | Chained† | No | No | Annotated READY items |
 | E5 | Decide | Controller | — | No | Yes (TODO/DEFER/REJECT) | Approved TODOs |
 | E6 | Batch plan | Controller | Per-controller | No | Yes (accept or reject with notes) | Batch definitions + write targets |
 | E7 | Apply | Batch | Sequential* | Yes | No | Modified files |
@@ -113,6 +114,8 @@ Enhance mode phases operate at two granularities: phases through `e_awaiting_bat
 | E10 | Verify | Batch | Sequential | Yes (held) | No | Verification report |
 
 \* Sequential within a controller — one batch completes E7→E10 before the next begins. Parallel across controllers — different controllers' batches can run concurrently, with the LockManager mediating shared resource access. The Scheduler dispatches once per batch; the thread runs the full E7→E10 chain with the grant held throughout.
+
+† E2, E3, and E4 execute as a synchronous chain within a single Scheduler-dispatched thread (same pattern as E7→E10 and hardening's harden→test→ci→verify chains). The Scheduler dispatches one work item after E1 completes; that thread runs `run_extraction` → `run_synthesis` → `run_audit` sequentially, then sets status to `e_awaiting_decisions`. The individual phase statuses (`e_extracting`, `e_synthesizing`, `e_auditing`) update as the chain progresses.
 
 ##### Phase details
 
@@ -159,7 +162,7 @@ Input: approved TODO items + analysis document + controller source code.
 Output: ordered list of batch definitions with write_targets.
 Status: `e_planning_batches` (AI call) → `e_awaiting_batch_approval` (human gate, not in ACTIVE_STATUSES). Follows the same pattern as `h_analyzing` → `h_awaiting_decisions`. Re-planning is unbounded — the operator controls the loop. On rejection, the status cycles: `e_awaiting_batch_approval` → `e_planning_batches` → `e_awaiting_batch_approval`.
 
-**E7–E10 — Apply → Test → CI → Verify**: Per batch, sequential within a controller. The Scheduler dispatches one batch at a time per controller. The thread acquires write locks at the start of E7 and runs the full apply→test→ci→verify chain sequentially, holding the grant throughout. These phases use the shared core orchestration (same as hardening's harden/test/ci/verify) with enhance-mode-specific prompts. On completion or error, all locks for the batch are released via `ensure` block. Different controllers' batches can execute concurrently — the LockManager mediates shared resource access.
+**E7–E10 — Apply → Test → CI → Verify**: Per batch, sequential within a controller. The Scheduler dispatches one batch at a time per controller. The thread acquires write locks at the start of E7 and runs the full apply→test→ci→verify chain sequentially, holding the grant throughout. These phases use the shared core orchestration (same as hardening's harden/test/ci/verify) with enhance-mode-specific prompts and the staging→copy write pattern (see Staging Write Pattern). On completion or error, all locks for the batch are released via `ensure` block. Different controllers' batches can execute concurrently — the LockManager mediates shared resource access.
 
 The workflow's `current_batch_id` tracks which batch is active. The workflow `status` reflects the current batch's phase: `e_applying` → `e_testing` / `e_fixing_tests` → `e_ci_checking` / `e_fixing_ci` → `e_verifying` → `e_batch_complete`. If the fix loop is exhausted, the batch enters `e_tests_failed` or `e_ci_failed` — grant is released, retry re-runs the batch from E7 (re-acquiring locks). When a batch reaches `e_batch_complete`, the next batch begins (advancing `current_batch_id`). When the last batch completes, the workflow status advances to `e_enhance_complete`.
 
@@ -243,7 +246,7 @@ Thread-safe object that tracks active grants and resolves conflicts. All state g
 
 - **All-or-nothing.** Request all paths at once. Either all locks are granted or none are. This prevents deadlocks — there is no hold-and-wait condition.
 - **Timeout-bounded queuing.** Work items wait up to `LOCK_TIMEOUT` seconds (default 300). If the timeout expires, the item stays queued with an incremented retry count. Items exceeding `MAX_LOCK_RETRIES` move to error state.
-- **No lock expansion after dispatch.** Once dispatched, an agent's lock footprint is fixed. If the agent discovers it needs a file it didn't lock, the write is rejected by `safe_write` and the gap is surfaced to the operator. The fix is to refine batch planning prompts, not to weaken enforcement.
+- **No lock expansion after dispatch.** Once dispatched, an agent's lock footprint is fixed. If the agent writes a file to staging that isn't covered by the grant, the staging→copy step rejects it via `safe_write` and the gap is surfaced to the operator. The fix is to refine batch planning prompts, not to weaken enforcement.
 
 **Grant lifecycle:** Grants are held through the entire batch write lifecycle (apply → test → CI → verify) in a single thread. Released on completion or error via `ensure` block. Each grant has a TTL (default 30 minutes) with **heartbeat renewal** — the TTL is renewed each time a `claude -p` call completes within the grant's scope. A background reaper releases grants whose TTL has expired without renewal, handling edge cases where a thread dies without releasing (e.g., `Thread.kill` from signal handler). Normal operation releases grants explicitly via `ensure` blocks; the reaper is a safety net only.
 
@@ -333,7 +336,7 @@ active_items -> [WorkItem]
 |---|---|---|
 | `write_paths` | Array\<String\> | File paths needing write access (no directories). Empty for read-only phases. |
 
-**Priority ordering:** Near-completion work first: `e_verifying > e_testing/e_ci_checking > e_applying > e_extracting/e_synthesizing/e_auditing > e_analyzing`. Starvation prevention: work items waiting longer than 10 minutes receive priority escalation.
+**Priority ordering:** Near-completion work first, applied to dispatch units: `e_applying (E7→E10 chain) > e_extracting (E2→E4 chain) > e_analyzing (E0)`. E2→E4 and E7→E10 are dispatched as single work items that chain internally; the priority reflects the unit's entry phase. Across controllers, a batch nearing verification is prioritized over one starting extraction. Starvation prevention: work items waiting longer than 10 minutes receive priority escalation.
 
 **Dispatch loop:**
 
@@ -359,6 +362,28 @@ loop do
   sleep 0.5
 end
 ```
+
+### Staging Write Pattern
+
+Both modes use the same write mechanism: `claude -p` agents write modified files to a **staging directory** within the sidecar, and the pipeline copies from staging to real paths via `safe_write`. This enables pre-write enforcement (path allowlist, grant coverage) without requiring agents to return file contents in JSON responses.
+
+**Staging directory locations:**
+
+- Hardening: `.harden/<controller_name>/staging/` (mirrors app directory structure)
+- Enhance: `.enhance/<controller_name>/<batch_id>/staging/` (mirrors app directory structure)
+
+**Flow:**
+
+1. Pipeline creates the staging directory and passes its path to the `claude -p` prompt.
+2. The prompt instructs the agent to write modified files to the staging directory instead of real paths (e.g., `staging/app/controllers/posts_controller.rb` instead of `app/controllers/posts_controller.rb`).
+3. The agent uses `--dangerously-skip-permissions` to read app code for context and write to the staging directory.
+4. The agent returns a JSON summary of changes (metadata only — no file contents in the response).
+5. The pipeline walks the staging directory and copies each file to its real path via `safe_write(real_path, content, grant_id:)`.
+6. Grant enforcement (enhance mode) and path allowlist validation (both modes) happen at copy time.
+
+**Fix loops** follow the same pattern: the fix agent receives the test/CI output, writes corrected files to the staging directory, and the pipeline re-copies via `safe_write`.
+
+**Why staging, not JSON return:** Returning full file contents in JSON works for hardening (one controller file) but scales poorly for enhance mode batches (multiple files). The staging pattern is uniform across both modes, simplifies `shared_phases.rb` (one write path, not two), and lets agents work naturally with their filesystem tools.
 
 ### Server Layer
 
@@ -399,7 +424,7 @@ Enhance mode adds UI for: research topic management (API call vs manual paste), 
 | `pipeline.rb` | `Pipeline` class definition, constants, `try_transition`, `initialize`, `reset!`, `to_json`, state accessors |
 | `pipeline/orchestration.rb` | Hardening phase logic: `discover_controllers`, `run_analysis`, `load_existing_analysis`, `submit_decision`, `ask_question`, `explain_finding`. Delegates to shared phases for harden/test/ci/verify. |
 | `pipeline/enhance_orchestration.rb` | Enhance phase logic: `run_enhance_analysis`, `submit_research`, `submit_research_api`, `run_extraction`, `run_synthesis`, `run_audit`, `submit_enhance_decisions`, `run_batch_planning`. Delegates to shared phases for batch apply/test/ci/verify. |
-| `pipeline/shared_phases.rb` | Shared core orchestration for apply/test/ci/verify used by both modes. Parameterized by mode-specific prompts, state keys, status names, sidecar config, and optional grant_id. |
+| `pipeline/shared_phases.rb` | Shared core orchestration for apply/test/ci/verify used by both modes. Both modes use the staging→copy write pattern (see Staging Write Pattern). Parameterized by mode-specific prompts, state keys, status names, sidecar/staging config, and optional grant_id. |
 | `pipeline/claude_client.rb` | `claude_call` (acquire CLI slot, spawn CLI, release slot), `parse_json_response` (strips markdown fences, extracts JSON from prose), `api_call` (Claude Messages API with web search for research) |
 | `pipeline/process_management.rb` | `safe_thread`, `cancel!`, `cancelled?`, `shutdown`, `spawn_with_timeout`, `run_all_ci_checks` |
 | `pipeline/sidecar.rb` | `sidecar_path`, `ensure_sidecar_dir`, `write_sidecar`, `safe_write`, `derive_test_path`, `default_derive_test_path` |
@@ -470,7 +495,7 @@ Enhance mode adds UI for: research topic management (API call vs manual paste), 
 
 - **Blockers as a UI concept, not a pipeline concept**: Findings with scope `module` or `app` are displayed as "out-of-scope blockers" in the UI. The pipeline itself does not enforce blocker dismissal — this is a client-side gate. All undismissed blockers must be dismissed before the "Harden" button is enabled, but this logic lives entirely in `index.html`.
 
-- **Path-validated writes via `safe_write`**: All file writes go through `safe_write` which resolves paths via `File.realpath` and checks against `allowed_write_paths`. This prevents directory traversal and symlink escapes. In enhance mode, `safe_write` additionally validates grant coverage (see Validation Logic).
+- **Path-validated writes via `safe_write`**: All file writes from staging to real paths go through `safe_write` which resolves paths via `File.realpath` and checks against `allowed_write_paths`. This prevents directory traversal and symlink escapes. In enhance mode, `safe_write` additionally validates grant coverage (see Validation Logic). Agents never write directly to app code — they write to staging directories, and the pipeline copies via `safe_write`.
 
 - **Configurable pipeline with per-mode defaults**: `Pipeline.new` accepts keyword arguments for `rails_root`, `sidecar_dir`, `enhance_sidecar_dir`, `allowed_write_paths`, `enhance_allowed_write_paths`, `discovery_glob`, `discovery_excludes`, and `test_path_resolver`. Hardening and enhance modes have independent sidecar directories and write path allowlists.
 
@@ -488,7 +513,11 @@ Enhance mode adds UI for: research topic management (API call vs manual paste), 
 
 - **Sidecar files enable resumability**: Discovery scans for existing sidecar files and exposes their presence and timestamps. Hardening sidecars (`.harden/`) store analysis, hardened code, test results, CI results, and verification. Enhance sidecars (`.enhance/`) store analysis, research, items, decisions, batches, and per-batch results. The frontend offers "Use Existing" to load a prior analysis without re-running claude.
 
-- **Shared core orchestration for write phases**: Apply/test/ci/verify logic is extracted from hardening's orchestration into shared helpers in `shared_phases.rb`. Both hardening and enhance modes call these shared helpers with mode-specific parameters: prompts, state keys, status names, sidecar configuration, and optional grant_id. This avoids duplication while keeping the modes' prompt templates and sidecar formats independent.
+- **Unified staging→copy write pattern**: Both modes use the same write mechanism — `claude -p` agents write to a staging directory, and the pipeline copies to real paths via `safe_write`. This eliminates the prior pattern of returning full file contents in JSON (e.g., `hardened_source`). The staging pattern unifies single-file (hardening) and multi-file (enhance batch) writes under one code path. Grant enforcement and path allowlist checks happen at copy time. Hardening prompts are updated from "return source in JSON" to "write files to staging directory" as part of the `shared_phases.rb` extraction.
+
+- **Shared core orchestration for write phases**: Apply/test/ci/verify logic is extracted from hardening's orchestration into shared helpers in `shared_phases.rb`. Both modes call these shared helpers with the unified staging→copy pattern and mode-specific parameters: prompts, state keys, status names, sidecar/staging directory configuration, and optional grant_id. The shared code walks the staging directory after each `claude -p` call and copies files via `safe_write`. This avoids duplication while keeping the modes' prompt templates and sidecar formats independent.
+
+- **Synchronous phase chaining for analysis pipelines**: E2→E3→E4 (extract→synthesize→audit) execute as a synchronous chain within a single Scheduler-dispatched thread, mirroring hardening's harden→test→ci→verify chain and enhance's E7→E10 chain. The Scheduler dispatches one work item; the thread runs all three phases sequentially. This keeps the Scheduler simple (it dispatches units, not individual phases) and avoids coordination overhead between read-only analysis phases that always run together.
 
 - **Write-only locks**: The LockManager only tracks write locks — there are no read locks. Read-only phases (E0-E4) bypass the lock system entirely and may read slightly stale data, which is harmless for analysis phases. This simplifies the LockManager and maximizes parallelism.
 
@@ -532,6 +561,8 @@ Enhance mode adds a `grant_id` parameter to `safe_write`:
 safe_write(path, content, grant_id: nil)
 ```
 
+`safe_write` is called during the staging→copy step — the pipeline reads each file from the staging directory and writes it to the real path via `safe_write`. Agents never call `safe_write` directly; they write to the staging directory using `--dangerously-skip-permissions`.
+
 Four checks (all applicable checks must pass):
 
 1. **Allowlist selection.** When `grant_id` is provided, `safe_write` uses `enhance_allowed_write_paths`; when `grant_id` is nil, it uses `allowed_write_paths`. This ties the write scope to the LockManager — enhance mode's broader write permissions are only available when operating under a grant.
@@ -539,7 +570,7 @@ Four checks (all applicable checks must pass):
 3. **Grant validity.** When `grant_id` is provided, a valid, non-expired, non-released `LockGrant` must exist for that id.
 4. **Grant coverage.** The target path must appear in the grant's `write_paths` (exact match).
 
-When `grant_id` is nil, checks 3 and 4 are skipped (hardening mode / legacy behavior). If any check fails, the write is rejected with a `LockViolationError`.
+When `grant_id` is nil, checks 3 and 4 are skipped (hardening mode). If any check fails, the write is rejected with a `LockViolationError`.
 
 The path allowlist and grant coverage serve as independent safety layers: the allowlist catches bugs in grant computation, and grants catch bugs in the allowlist configuration.
 
@@ -614,8 +645,9 @@ Each enhance phase writes structured output to the `.enhance/` sidecar directory
 # app/controllers/.enhance/posts_controller/
 .enhance/<controller_name>/
   analysis.json          # E0 output
+  research_status.json   # E1 topic statuses (pending/completed/rejected) for resume
   research/
-    <topic_slug>.md      # E1 output (one file per topic)
+    <topic_slug>.md      # E1 output (one file per completed topic)
   extract.json           # E2 output
   synthesize.json        # E3 output
   audit.json             # E4 output
@@ -636,7 +668,7 @@ Each enhance phase writes structured output to the `.enhance/` sidecar directory
 
 Resume rules:
 - If `.harden/verification.json` exists → status is `h_complete` (eligible for enhance).
-- If `.enhance/analysis.json` exists but `research/` is incomplete → status is `e_awaiting_research`.
+- If `.enhance/analysis.json` exists but `research_status.json` shows pending topics → status is `e_awaiting_research`.
 - If `.enhance/decisions.json` exists but `batches.json` does not → status is `e_awaiting_decisions` (ready for re-submission).
 - If `.enhance/batches.json` exists but no batch has `apply.json` → status is `e_awaiting_batch_approval`.
 - If a batch's `apply.json` exists but `test_results.json` does not → that batch resumes at testing.
@@ -686,7 +718,7 @@ Pipeline.new(
 - **Batch test/CI fix loop exhaustion**: Workflow enters `e_tests_failed` or `e_ci_failed`. Grant is released. Retry button re-runs the batch from E7 (apply), re-acquiring locks.
 - **Lock leak (grant not released)**: Grant TTL (30 minutes, renewed on `claude -p` return) expires without renewal. Background reaper releases it. Safety net only — normal operation releases explicitly.
 - **Deadlock prevention**: All-or-nothing acquisition eliminates hold-and-wait. Starvation handled by priority escalation after 10 minutes.
-- **Incomplete write targets**: `safe_write` rejects writes to unlocked files with `LockViolationError`. Surfaces batch planning deficiencies — fix is to refine prompts.
+- **Incomplete write targets**: During staging→copy, `safe_write` rejects writes to files not covered by the grant with `LockViolationError`. Surfaces batch planning deficiencies — fix is to refine prompts.
 - **Research phase failure**: API call failure reverts the topic status to `pending`. Operator can retry (API) or paste manually. Per-topic state means one topic's failure does not affect others. Research does not block other controllers.
 - **Sidecar corruption**: Malformed sidecar file on resume → phase treated as incomplete and re-run. Phase outputs are idempotent.
 
