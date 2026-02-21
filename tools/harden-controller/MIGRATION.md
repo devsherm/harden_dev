@@ -65,17 +65,19 @@ These appear in the codebase but are **not** workflow status strings:
 - `build_workflow` — add `mode: "hardening"` to the returned hash (this is a **new** field; there is no existing `mode` field)
 
 **`pipeline/orchestration.rb`** (all status assignments and comparisons in phase methods):
-- `run_analysis`: sets `awaiting_decisions` → `h_awaiting_decisions`
-- `run_hardening`: checks/sets `awaiting_decisions`, `hardened`, `skipped` → `h_awaiting_decisions`, `h_hardened`, `h_skipped`
+- `load_existing_analysis`: sets `awaiting_decisions` → `h_awaiting_decisions`
+- `run_analysis`: sets `analyzing`, `awaiting_decisions` → `h_analyzing`, `h_awaiting_decisions`
+- `run_hardening`: sets `hardening`, `hardened`, `skipped` → `h_hardening`, `h_hardened`, `h_skipped`
 - `run_testing`: checks/sets `hardened`, `testing`, `fixing_tests`, `tested`, `tests_failed` → prefixed versions
 - `run_ci_checks`: checks/sets `tested`, `ci_checking`, `fixing_ci`, `ci_passed`, `ci_failed` → prefixed versions
 - `run_verification`: checks/sets `ci_passed`, `verifying`, `complete` → prefixed versions
 
-**`server.rb`** (route guards in `try_transition` calls):
-- `/decisions` route: guard `"awaiting_decisions"` → `"h_awaiting_decisions"`
-- `/pipeline/retry-tests` route: guard `"tests_failed"` → `"h_tests_failed"`
-- `/pipeline/retry-ci` route: guard `"ci_failed"` → `"h_ci_failed"`
-- `/pipeline/retry` route: guard `"error"` → stays `"error"` (unchanged)
+**`server.rb`** (status strings in `try_transition` calls — both `guard:` and `to:` values):
+- `/pipeline/analyze` route: guard `:not_active` (unchanged), to `"analyzing"` → `"h_analyzing"`
+- `/decisions` route: guard `"awaiting_decisions"` → `"h_awaiting_decisions"`, to `"hardening"` → `"h_hardening"`
+- `/pipeline/retry-tests` route: guard `"tests_failed"` → `"h_tests_failed"`, to `"hardened"` → `"h_hardened"`
+- `/pipeline/retry-ci` route: guard `"ci_failed"` → `"h_ci_failed"`, to `"tested"` → `"h_tested"`
+- `/pipeline/retry` route: guard `"error"` (unchanged), to `"analyzing"` → `"h_analyzing"`
 
 **`index.html`** — CSS classes:
 - `.workflow-dot.analyzing` → `.workflow-dot.h_analyzing` (and all 15 renamed statuses)
@@ -359,6 +361,18 @@ After deploying the migration, any `.harden/` directories from previous runs con
 
 The current `build_workflow` does not include a `mode` field. Adding `mode: "hardening"` is a new field addition, not a rename. An executor searching for an existing `mode` assignment will find nothing — this is expected.
 
+### HTTP response payloads are not workflow statuses (Step 1)
+
+Server route handlers return JSON response bodies like `{ status: "analyzing" }` (line 274). These are HTTP response payloads, **not** workflow status assignments. Do NOT rename them. The only response that mirrors a workflow status is `POST /pipeline/analyze` returning `"analyzing"` — this is intentionally left as-is since it's a response confirmation, not stored state.
+
+### Redundant status sets in orchestration.rb (Step 1)
+
+`run_analysis` sets `"analyzing"` (line 118) and `run_hardening` sets `"hardening"` (line 177), even though `try_transition` in server.rb already set these via the `to:` parameter. Both occurrences are still string literals that need renaming. An executor doing targeted renames by method might miss these if they only look at the "final" status each method sets.
+
+### `load_existing_analysis` is a separate method (Step 1)
+
+`load_existing_analysis` (orchestration.rb line 108) sets `"awaiting_decisions"` independently from `run_analysis`. It's called from the `/pipeline/load-analysis` route (not via `try_transition`). Don't miss it when renaming — it's easy to overlook because it's not part of the main phase chain.
+
 ### `--dangerously-skip-permissions` is new (Step 2)
 
 The current `claude_call` does not use `--dangerously-skip-permissions`. Adding it unconditionally is correct — all `claude -p` calls run in a controlled context and the flag is needed for staging writes.
@@ -409,22 +423,27 @@ Every status string literal in the codebase, grouped by file. Use this to verify
 
 | Method | Status strings used | Rename? |
 |---|---|---|
-| `run_analysis` | Sets `"awaiting_decisions"` | Yes |
-| `run_hardening` | Reads `"awaiting_decisions"`, sets `"hardened"`, `"skipped"` | Yes |
+| `load_existing_analysis` | Sets `"awaiting_decisions"` | Yes |
+| `run_analysis` | Sets `"analyzing"`, `"awaiting_decisions"` | Yes |
+| `run_hardening` | Sets `"hardening"`, `"hardened"`, `"skipped"` | Yes |
 | `run_testing` | Reads `"hardened"`, sets `"testing"`, `"fixing_tests"`, `"tested"`, `"tests_failed"` | Yes |
 | `run_ci_checks` | Reads `"tested"`, sets `"ci_checking"`, `"fixing_ci"`, `"ci_passed"`, `"ci_failed"` | Yes |
 | `run_verification` | Reads `"ci_passed"`, sets `"verifying"`, `"complete"` | Yes |
 | All error handlers | Set `"error"` | No |
 
+Note: `run_analysis` and `run_hardening` redundantly set `"analyzing"` and `"hardening"` respectively — the status was already set by `try_transition` in server.rb. Both occurrences are still string literals that need renaming.
+
 ### `server.rb`
 
-| Location | String | Context | Rename? |
+Each `try_transition` call has two status string parameters: `guard:` (the required current status) and `to:` (the target status). Both need renaming where applicable.
+
+| Location | `guard:` string | `to:` string | Rename? |
 |---|---|---|---|
-| `POST /decisions` | `"awaiting_decisions"` | `try_transition` guard | Yes |
-| `POST /pipeline/retry-tests` | `"tests_failed"` | `try_transition` guard | Yes |
-| `POST /pipeline/retry-ci` | `"ci_failed"` | `try_transition` guard | Yes |
-| `POST /pipeline/retry` | `"error"` | `try_transition` guard | No |
-| `POST /pipeline/analyze` | `:not_active` | `try_transition` guard | No (symbol, not string) |
+| `POST /pipeline/analyze` | `:not_active` (symbol — no rename) | `"analyzing"` | Yes (`to:` only) |
+| `POST /decisions` | `"awaiting_decisions"` | `"hardening"` | Yes (both) |
+| `POST /pipeline/retry-tests` | `"tests_failed"` | `"hardened"` | Yes (both) |
+| `POST /pipeline/retry-ci` | `"ci_failed"` | `"tested"` | Yes (both) |
+| `POST /pipeline/retry` | `"error"` (no rename) | `"analyzing"` | Yes (`to:` only) |
 
 ### `index.html` — CSS
 
@@ -443,7 +462,7 @@ Every status string literal in the codebase, grouped by file. Use this to verify
 | Complete check | `'complete'` | Shows completion UI | Yes |
 | Skip check | `'skipped'` | Shows skipped UI | Yes |
 | Status labels object | Keys: `'awaiting_decisions'`, `'fixing_tests'`, `'tests_failed'`, `'ci_checking'`, `'fixing_ci'`, `'ci_passed'`, `'ci_failed'` | Human-readable labels | Yes (keys only, not values) |
-| Header summary counts | Various status strings used as keys for counting workflows | Yes |
+| Header summary counts | `'analyzing'`, `'hardening'`, `'testing'`, `'fixing_tests'`, `'ci_checking'`, `'fixing_ci'`, `'verifying'`, `'awaiting_decisions'`, `'tests_failed'`, `'ci_failed'`, `'complete'`, `'error'` | Yes (all except `'error'`) |
 
 ### `index.html` — `hardened_source` references (Step 2)
 
