@@ -94,7 +94,7 @@
   - **Testing**: Test per Spec § Test Organization — batch apply/test/ci/verify with lock grants (stub LockManager), shared core orchestration delegation, sequential batch chain (batch 1 completes before batch 2 starts), current_batch_id tracking, grant lifecycle (acquired at E7, renewed on claude -p return, released on completion/error via ensure), e_enhance_complete on last batch, e_tests_failed/e_ci_failed with grant release. Run `bundle exec rake test`.
   - **Implementation detail — grant renewal**: After each `claude_call` returns within a batch, call `@lock_manager.renew(grant_id: grant.id)`. This extends the TTL so long-running batches don't expire.
   - **Implementation detail — grant release via ensure**: Wrap the batch loop body in `begin...ensure` that calls `@lock_manager.release(grant_id: grant.id)` if grant is non-nil.
-  - **Implementation detail — calling shared phases**: Call `shared_apply` with enhance-specific params:
+  - **Implementation detail — calling shared phases**: All four shared methods (`shared_apply`, `shared_test`, `shared_ci_check`, `shared_verify`) accept `grant_id:` and propagate it to `copy_from_staging`, which in turn passes it to `safe_write`. Enhance mode callers **must** pass `grant_id: grant.id` and `phase_label: "Enhance"` (or batch-specific label). Example:
     ```ruby
     shared_apply(name,
       apply_prompt_fn: -> { Prompts.e_apply(batch_items, analysis, source, staging_dir) },
@@ -103,10 +103,11 @@
       skipped_status: nil,  # no skip in enhance
       sidecar_dir: @enhance_sidecar_dir,
       staging_subdir: "#{batch_id}/staging",
-      grant_id: grant.id
+      grant_id: grant.id,
+      phase_label: "Enhance apply"
     )
     ```
-    Similarly for `shared_test`, `shared_ci_check`, `shared_verify`.
+    Similarly for `shared_test`, `shared_ci_check`, `shared_verify` — pass `grant_id: grant.id` and an appropriate `phase_label:`.
 
 - [ ] 20. **Add enhance mode server routes**
   - **Implements**: Spec § Integration (HTTP Routes — all `/enhance/*` routes), § Server Layer (enhance routes use Scheduler for dispatch).

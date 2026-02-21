@@ -237,7 +237,7 @@ class OrchestrationTestCase < PipelineTestCase
   def stub_copy_from_staging(ctrl_path, source = HARDENED_SOURCE)
     path = ctrl_path
     content = source
-    @pipeline.define_singleton_method(:copy_from_staging) do |staging_dir|
+    @pipeline.define_singleton_method(:copy_from_staging) do |staging_dir, grant_id: nil|
       File.write(path, content)
     end
   end
@@ -247,7 +247,7 @@ class OrchestrationTestCase < PipelineTestCase
     path = ctrl_path
     idx = 0
     mutex = Mutex.new
-    @pipeline.define_singleton_method(:copy_from_staging) do |staging_dir|
+    @pipeline.define_singleton_method(:copy_from_staging) do |staging_dir, grant_id: nil|
       i = mutex.synchronize { idx.tap { idx += 1 } }
       File.write(path, sources[i] || sources.last)
     end

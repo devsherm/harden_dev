@@ -84,7 +84,7 @@ class PipelineHardeningTest < OrchestrationTestCase
                   decision: decision_fixture(action: "approve"))
     stub_claude_call(hardened_fixture)
     # Stub copy_from_staging to do nothing (agent wrote nothing to staging)
-    @pipeline.define_singleton_method(:copy_from_staging) { |_staging_dir| }
+    @pipeline.define_singleton_method(:copy_from_staging) { |_staging_dir, grant_id: nil| }
     testing_recorder = capture_chained_call(:run_testing)
 
     @pipeline.run_hardening(@ctrl_name)
@@ -127,7 +127,7 @@ class PipelineHardeningTest < OrchestrationTestCase
       @cancelled = true
       response
     end
-    @pipeline.define_singleton_method(:copy_from_staging) { |_staging_dir| }
+    @pipeline.define_singleton_method(:copy_from_staging) { |_staging_dir, grant_id: nil| }
     testing_recorder = capture_chained_call(:run_testing)
 
     @pipeline.run_hardening(@ctrl_name)

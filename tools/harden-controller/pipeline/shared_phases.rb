@@ -18,7 +18,7 @@ class Pipeline
     #   prompt_key        - symbol key under which to store the prompt (e.g. :h_verify)
     #
     def shared_verify(name, guard_status:, verifying_status:, verified_status:,
-                      verify_prompt_fn:, prompt_key:)
+                      verify_prompt_fn:, prompt_key:, phase_label: "Verification")
       source_path = ctrl_name = original_source = analysis_json = nil
       @mutex.synchronize do
         workflow = @state[:workflows][name]
@@ -53,7 +53,7 @@ class Pipeline
           wf = @state[:workflows][name]
           wf[:error] = sanitize_error(e.message)
           wf[:status] = "error"
-          add_error("Verification failed for #{name}: #{e.message}")
+          add_error("#{phase_label} failed for #{name}: #{e.message}")
         end
       end
     end
@@ -101,7 +101,8 @@ class Pipeline
     #
     def shared_ci_check(name, guard_status:, ci_checking_status:, fixing_status:,
                         ci_passed_status:, ci_failed_status:,
-                        fix_prompt_fn:, prompt_key:, next_phase_fn: nil)
+                        fix_prompt_fn:, prompt_key:, next_phase_fn: nil,
+                        phase_label: "CI checking", grant_id: nil)
       source_path = ctrl_name = controller_relative = nil
       @mutex.synchronize do
         workflow = @state[:workflows][name]
@@ -148,7 +149,7 @@ class Pipeline
               @prompt_store[name][prompt_key] = prompt
             end
 
-            copy_from_staging(stg)
+            copy_from_staging(stg, grant_id: grant_id)
 
             fix_attempts << {
               attempt: i + 1,
@@ -183,7 +184,7 @@ class Pipeline
             wf[:status] = ci_passed_status
           else
             wf[:status] = ci_failed_status
-            add_error("CI checks still failing for #{name} after #{fix_attempts.length} fix attempt(s)")
+            add_error("#{phase_label}: checks still failing for #{name} after #{fix_attempts.length} fix attempt(s)")
             return
           end
         end
@@ -192,7 +193,7 @@ class Pipeline
           wf = @state[:workflows][name]
           wf[:error] = sanitize_error(e.message)
           wf[:status] = "error"
-          add_error("CI checking failed for #{name}: #{e.message}")
+          add_error("#{phase_label} failed for #{name}: #{e.message}")
         end
         return
       end
@@ -217,7 +218,8 @@ class Pipeline
     #
     def shared_test(name, guard_status:, testing_status:, fixing_status:,
                     tested_status:, tests_failed_status:,
-                    fix_prompt_fn:, prompt_key:, next_phase_fn: nil)
+                    fix_prompt_fn:, prompt_key:, next_phase_fn: nil,
+                    phase_label: "Testing", grant_id: nil)
       source_path = ctrl_name = nil
       @mutex.synchronize do
         workflow = @state[:workflows][name]
@@ -271,7 +273,7 @@ class Pipeline
               @prompt_store[name][prompt_key] = prompt
             end
 
-            copy_from_staging(stg)
+            copy_from_staging(stg, grant_id: grant_id)
 
             # Re-run tests
             @mutex.synchronize do
@@ -308,7 +310,7 @@ class Pipeline
             wf[:status] = tested_status
           else
             wf[:status] = tests_failed_status
-            add_error("Tests still failing for #{name} after #{attempts.length} attempt(s)")
+            add_error("#{phase_label}: tests still failing for #{name} after #{attempts.length} attempt(s)")
             return
           end
         end
@@ -317,7 +319,7 @@ class Pipeline
           wf = @state[:workflows][name]
           wf[:error] = sanitize_error(e.message)
           wf[:status] = "error"
-          add_error("Testing failed for #{name}: #{e.message}")
+          add_error("#{phase_label} failed for #{name}: #{e.message}")
         end
         return
       end
@@ -347,7 +349,7 @@ class Pipeline
     def shared_apply(name, apply_prompt_fn:, applied_status:, applying_status:,
                      skipped_status:, sidecar_dir:, staging_subdir: "staging",
                      prompt_key: :h_harden, sidecar_file: "hardened.json",
-                     grant_id: nil)
+                     grant_id: nil, phase_label: "Hardening")
       source_path = ctrl_name = analysis_json = decision = nil
       @mutex.synchronize do
         workflow = @state[:workflows][name]
@@ -396,13 +398,13 @@ class Pipeline
           @prompt_store[name][prompt_key] = prompt
         end
 
-        copy_from_staging(stg)
+        copy_from_staging(stg, grant_id: grant_id)
       rescue => e
         @mutex.synchronize do
           wf = @state[:workflows][name]
           wf[:error] = sanitize_error(e.message)
           wf[:status] = "error"
-          add_error("Hardening failed for #{name}: #{e.message}")
+          add_error("#{phase_label} failed for #{name}: #{e.message}")
         end
       end
     end

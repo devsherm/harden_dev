@@ -115,7 +115,7 @@ class LockManager
   def renew(grant_id)
     @mutex.synchronize do
       grant = @grants[grant_id]
-      return false unless grant || grant&.released
+      return false unless grant
       return false if grant.released
       grant.expires_at = Time.now + @ttl
       true

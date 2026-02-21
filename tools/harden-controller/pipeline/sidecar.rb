@@ -58,13 +58,13 @@ class Pipeline
     # Walk the staging directory and copy each file to its real path via safe_write.
     # staging_dir mirrors the app directory structure:
     #   staging/app/controllers/posts_controller.rb → app/controllers/posts_controller.rb
-    def copy_from_staging(staging_dir)
+    def copy_from_staging(staging_dir, grant_id: nil)
       Dir.glob(File.join(staging_dir, "**", "*")).each do |staged_file|
         next if File.directory?(staged_file)
         relative = staged_file.sub("#{staging_dir}/", "")
         real_path = File.join(@rails_root, relative)
         FileUtils.mkdir_p(File.dirname(real_path))
-        safe_write(real_path, File.read(staged_file))
+        safe_write(real_path, File.read(staged_file), grant_id: grant_id)
       end
     end
 
