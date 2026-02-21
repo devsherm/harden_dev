@@ -61,6 +61,7 @@ class Pipeline
       rescue => e
         @mutex.synchronize do
           wf = @state[:workflows][name]
+          wf[:last_active_status] = wf[:status]
           wf[:error] = sanitize_error(e.message)
           wf[:status] = "error"
           add_error("#{phase_label} failed for #{name}: #{e.message}")
@@ -202,6 +203,7 @@ class Pipeline
       rescue => e
         @mutex.synchronize do
           wf = @state[:workflows][name]
+          wf[:last_active_status] = wf[:status]
           wf[:error] = sanitize_error(e.message)
           wf[:status] = "error"
           add_error("#{phase_label} failed for #{name}: #{e.message}")
@@ -348,6 +350,7 @@ class Pipeline
       rescue => e
         @mutex.synchronize do
           wf = @state[:workflows][name]
+          wf[:last_active_status] = wf[:status]
           wf[:error] = sanitize_error(e.message)
           wf[:status] = "error"
           add_error("#{phase_label} failed for #{name}: #{e.message}")
@@ -437,6 +440,7 @@ class Pipeline
       rescue => e
         @mutex.synchronize do
           wf = @state[:workflows][name]
+          wf[:last_active_status] = wf[:status]
           wf[:error] = sanitize_error(e.message)
           wf[:status] = "error"
           add_error("#{phase_label} failed for #{name}: #{e.message}")

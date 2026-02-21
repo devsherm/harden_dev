@@ -143,6 +143,7 @@ class PipelineResetTest < PipelineTestCase
     mock_sched = Object.new
     def mock_sched.queue_depth; 0; end
     def mock_sched.active_items; 0; end
+    def mock_sched.start; self; end
     def mock_sched.stop; end
 
     pipeline = Pipeline.new(

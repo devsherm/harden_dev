@@ -524,7 +524,7 @@ class EnhanceRoutesTest < Minitest::Test
     assert_equal 409, last_response.status
   end
 
-  def test_retry_transitions_from_error_and_starts_analysis
+  def test_retry_defaults_to_analysis_when_no_last_active_status
     seed_workflow(@ctrl_name, status: "error", error: "Something failed")
     dispatched = false
     $pipeline.define_singleton_method(:run_enhance_analysis) { |name| dispatched = true }
@@ -535,15 +535,123 @@ class EnhanceRoutesTest < Minitest::Test
     assert_equal "retrying_enhance", body["status"]
     assert_equal @ctrl_name, body["controller"]
     sleep 0.1
-    assert dispatched, "run_enhance_analysis should be dispatched on retry"
+    assert dispatched, "run_enhance_analysis should be dispatched when no last_active_status"
   end
 
-  def test_retry_transitions_status_to_e_analyzing
+  def test_retry_defaults_to_e_analyzing_status_when_no_last_active_status
     seed_workflow(@ctrl_name, status: "error", error: "Something failed")
     $pipeline.define_singleton_method(:run_enhance_analysis) { |name| nil }
 
     xhr_post_json "/enhance/retry", { "controller" => @ctrl_name }
     assert_equal "e_analyzing", workflow_status(@ctrl_name)
+  end
+
+  def test_retry_dispatches_extraction_chain_when_last_status_was_e_extracting
+    seed_workflow(@ctrl_name, status: "error", error: "Extract failed",
+                  last_active_status: "e_extracting")
+    dispatched = false
+    $pipeline.define_singleton_method(:retry_extraction_chain) { |name| dispatched = true }
+
+    xhr_post_json "/enhance/retry", { "controller" => @ctrl_name }
+    assert_equal 200, last_response.status
+    assert_equal "e_extracting", workflow_status(@ctrl_name)
+    sleep 0.1
+    assert dispatched, "retry_extraction_chain should be dispatched"
+  end
+
+  def test_retry_dispatches_extraction_chain_when_last_status_was_e_synthesizing
+    seed_workflow(@ctrl_name, status: "error", error: "Synthesis failed",
+                  last_active_status: "e_synthesizing")
+    dispatched = false
+    $pipeline.define_singleton_method(:retry_extraction_chain) { |name| dispatched = true }
+
+    xhr_post_json "/enhance/retry", { "controller" => @ctrl_name }
+    assert_equal 200, last_response.status
+    assert_equal "e_extracting", workflow_status(@ctrl_name)
+    sleep 0.1
+    assert dispatched, "retry_extraction_chain should be dispatched for e_synthesizing error"
+  end
+
+  def test_retry_dispatches_extraction_chain_when_last_status_was_e_auditing
+    seed_workflow(@ctrl_name, status: "error", error: "Audit failed",
+                  last_active_status: "e_auditing")
+    dispatched = false
+    $pipeline.define_singleton_method(:retry_extraction_chain) { |name| dispatched = true }
+
+    xhr_post_json "/enhance/retry", { "controller" => @ctrl_name }
+    assert_equal 200, last_response.status
+    assert_equal "e_extracting", workflow_status(@ctrl_name)
+    sleep 0.1
+    assert dispatched, "retry_extraction_chain should be dispatched for e_auditing error"
+  end
+
+  def test_retry_dispatches_batch_planning_when_last_status_was_e_planning_batches
+    seed_workflow(@ctrl_name, status: "error", error: "Planning failed",
+                  last_active_status: "e_planning_batches",
+                  e_analysis: {}, e_decisions: {}, e_audit: { "annotated_items" => [] })
+    dispatched = false
+    $pipeline.define_singleton_method(:run_batch_planning) { |name, **kwargs| dispatched = true }
+
+    xhr_post_json "/enhance/retry", { "controller" => @ctrl_name }
+    assert_equal 200, last_response.status
+    assert_equal "e_planning_batches", workflow_status(@ctrl_name)
+    sleep 0.1
+    assert dispatched, "run_batch_planning should be dispatched for e_planning_batches error"
+  end
+
+  def test_retry_dispatches_batch_execution_when_last_status_was_e_applying
+    seed_workflow(@ctrl_name, status: "error", error: "Apply failed",
+                  last_active_status: "e_applying",
+                  e_batches: { "batches" => [] }, e_analysis: {})
+    dispatched = false
+    $pipeline.define_singleton_method(:run_batch_execution) { |name| dispatched = true }
+
+    xhr_post_json "/enhance/retry", { "controller" => @ctrl_name }
+    assert_equal 200, last_response.status
+    assert_equal "e_applying", workflow_status(@ctrl_name)
+    sleep 0.1
+    assert dispatched, "run_batch_execution should be dispatched for e_applying error"
+  end
+
+  def test_retry_dispatches_batch_execution_when_last_status_was_e_testing
+    seed_workflow(@ctrl_name, status: "error", error: "Testing crashed",
+                  last_active_status: "e_testing",
+                  e_batches: { "batches" => [] }, e_analysis: {})
+    dispatched = false
+    $pipeline.define_singleton_method(:run_batch_execution) { |name| dispatched = true }
+
+    xhr_post_json "/enhance/retry", { "controller" => @ctrl_name }
+    assert_equal 200, last_response.status
+    assert_equal "e_applying", workflow_status(@ctrl_name)
+    sleep 0.1
+    assert dispatched, "run_batch_execution should be dispatched for e_testing error"
+  end
+
+  def test_retry_dispatches_batch_execution_when_last_status_was_e_verifying
+    seed_workflow(@ctrl_name, status: "error", error: "Verify crashed",
+                  last_active_status: "e_verifying",
+                  e_batches: { "batches" => [] }, e_analysis: {})
+    dispatched = false
+    $pipeline.define_singleton_method(:run_batch_execution) { |name| dispatched = true }
+
+    xhr_post_json "/enhance/retry", { "controller" => @ctrl_name }
+    assert_equal 200, last_response.status
+    assert_equal "e_applying", workflow_status(@ctrl_name)
+    sleep 0.1
+    assert dispatched, "run_batch_execution should be dispatched for e_verifying error"
+  end
+
+  def test_retry_dispatches_analysis_when_last_status_was_e_analyzing
+    seed_workflow(@ctrl_name, status: "error", error: "Analysis failed",
+                  last_active_status: "e_analyzing")
+    dispatched = false
+    $pipeline.define_singleton_method(:run_enhance_analysis) { |name| dispatched = true }
+
+    xhr_post_json "/enhance/retry", { "controller" => @ctrl_name }
+    assert_equal 200, last_response.status
+    assert_equal "e_analyzing", workflow_status(@ctrl_name)
+    sleep 0.1
+    assert dispatched, "run_enhance_analysis should be dispatched for e_analyzing error"
   end
 
   # ── POST /enhance/retry-tests ────────────────────────────────

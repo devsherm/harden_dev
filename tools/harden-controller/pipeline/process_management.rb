@@ -11,6 +11,7 @@ class Pipeline
           @mutex.synchronize do
             wf = @state[:workflows][workflow_name]
             if wf && wf[:status] != "error"
+              wf[:last_active_status] = wf[:status]
               wf[:error] = sanitize_error(e.message)
               wf[:status] = "error"
               add_error("Thread failed for #{workflow_name}: #{e.message}")

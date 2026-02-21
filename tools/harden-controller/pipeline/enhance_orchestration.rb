@@ -70,6 +70,7 @@ class Pipeline
       rescue => e
         @mutex.synchronize do
           wf = @state[:workflows][name]
+          wf[:last_active_status] = wf[:status]
           wf[:error] = sanitize_error(e.message)
           wf[:status] = "error"
           add_error("Enhance analysis failed for #{name}: #{e.message}")
@@ -482,6 +483,22 @@ class Pipeline
 
     public
 
+    # ── Retry entry point for E2→E4 extraction chain ──────────
+    #
+    # Sets workflow to e_extracting and re-runs the full E2→E3→E4 chain.
+    # Used by the /enhance/retry route when the error occurred during
+    # extraction, synthesis, or audit phases.
+    #
+    def retry_extraction_chain(name)
+      @mutex.synchronize do
+        wf = @state[:workflows][name]
+        return unless wf
+        wf[:status] = "e_extracting"
+        wf[:error] = nil
+      end
+      run_extraction_chain(name)
+    end
+
     # ── E5: Decide ────────────────────────────────────────────
     #
     # Receives per-item decisions (TODO/DEFER/REJECT), stores in workflow
@@ -632,6 +649,7 @@ class Pipeline
         @mutex.synchronize do
           wf = @state[:workflows][name]
           if wf
+            wf[:last_active_status] = wf[:status]
             wf[:error]  = sanitize_error(e.message)
             wf[:status] = "error"
             add_error("Batch re-planning failed for #{name}: #{e.message}")

@@ -68,6 +68,10 @@ class Pipeline
     @mutex.synchronize { @state[:workflows].key?(name) }
   end
 
+  def workflow_data(name, key)
+    @mutex.synchronize { @state[:workflows][name]&.[](key) }
+  end
+
   # Atomically verify guard condition and transition workflow status.
   # For :not_active guard, creates the workflow if it doesn't exist.
   # Returns [true, nil] on success, [false, error_string] on failure.
@@ -144,6 +148,7 @@ class Pipeline
       slot_available_fn: -> { @claude_active < MAX_CLAUDE_CONCURRENCY },
       safe_thread_fn: ->(block = nil, &blk) { safe_thread(&(block || blk)) }
     )
+    @scheduler.start
   end
 
   def reset!

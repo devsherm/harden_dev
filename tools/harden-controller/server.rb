@@ -598,6 +598,8 @@ post "/enhance/batches/replan" do
 end
 
 # Retry last failed enhance phase (from error status).
+# Inspects last_active_status to determine which phase to re-run,
+# rather than always restarting from E0 (analysis).
 # Body: { controller }
 post "/enhance/retry" do
   content_type :json
@@ -605,10 +607,37 @@ post "/enhance/retry" do
   controller = body["controller"]
   halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
 
-  ok, err = $pipeline.try_transition(controller, guard: "error", to: "e_analyzing")
+  last_status = $pipeline.workflow_data(controller, :last_active_status)
+
+  # Map last active status to the correct retry target and dispatch method.
+  # Batch execution phases (E7-E10) retry from e_applying.
+  # Extraction chain phases (E2-E4) retry from e_extracting.
+  # Batch planning (E6) retries from e_planning_batches.
+  # Default (nil / E0) retries from e_analyzing.
+  BATCH_STATUSES = %w[
+    e_applying e_testing e_fixing_tests e_ci_checking e_fixing_ci e_verifying
+    e_batch_applied e_batch_tested e_batch_ci_passed e_batch_complete
+  ].freeze unless defined?(BATCH_STATUSES)
+
+  case last_status
+  when "e_extracting", "e_synthesizing", "e_auditing"
+    target = "e_extracting"
+    dispatch = -> { $pipeline.retry_extraction_chain(controller) }
+  when "e_planning_batches"
+    target = "e_planning_batches"
+    dispatch = -> { $pipeline.run_batch_planning(controller) }
+  when *BATCH_STATUSES
+    target = "e_applying"
+    dispatch = -> { $pipeline.run_batch_execution(controller) }
+  else
+    target = "e_analyzing"
+    dispatch = -> { $pipeline.run_enhance_analysis(controller) }
+  end
+
+  ok, err = $pipeline.try_transition(controller, guard: "error", to: target)
   halt 409, { error: err }.to_json unless ok
 
-  $pipeline.safe_thread(workflow_name: controller) { $pipeline.run_enhance_analysis(controller) }
+  $pipeline.safe_thread(workflow_name: controller) { dispatch.call }
 
   { status: "retrying_enhance", controller: controller }.to_json
 end
