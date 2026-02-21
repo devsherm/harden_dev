@@ -97,7 +97,7 @@ class OrchestrationTestCase < PipelineTestCase
 
     workflow = {
       name: entry[:name], path: entry[:path], full_path: entry[:full_path],
-      status: "pending", analysis: nil, decision: nil, hardened: nil,
+      status: "pending", mode: "hardening", analysis: nil, decision: nil, hardened: nil,
       test_results: nil, ci_results: nil, verification: nil,
       error: nil, started_at: nil, completed_at: nil, original_source: nil
     }.merge(overrides)

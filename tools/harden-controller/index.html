@@ -364,37 +364,6 @@
     .scope-module { background: #fb923c22; color: var(--orange); }
     .scope-app { background: #f8717122; color: var(--red); }
 
-    .source-viewer {
-      margin-top: 0.8rem;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      overflow: hidden;
-    }
-
-    .source-viewer-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 0.5rem 0.8rem;
-      background: var(--surface-hover);
-      cursor: pointer;
-      font-size: 0.85rem;
-      user-select: none;
-    }
-
-    .source-viewer-header:hover { background: var(--border); }
-
-    .source-viewer pre {
-      margin: 0;
-      padding: 0.8rem;
-      background: var(--bg);
-      overflow-x: auto;
-      font-size: 0.8rem;
-      line-height: 1.5;
-      max-height: 500px;
-      overflow-y: auto;
-    }
-
     .findings-addressed {
       margin-top: 0.8rem;
       display: flex;
@@ -605,8 +574,7 @@
       if (!perController[name]) {
         perController[name] = {
           findingDecisions: {},
-          dismissedBlockers: {},
-          sourceViewOpen: false
+          dismissedBlockers: {}
         };
       }
       return perController[name];
@@ -1424,7 +1392,9 @@
         'h_ci_passed': 'CI passed',
         'h_ci_failed': 'CI failed',
       };
-      return labels[status] || status;
+      if (labels[status]) return labels[status];
+      // Strip mode prefix (h_, e_) and humanize underscores
+      return status.replace(/^[a-z]_/, '').replace(/_/g, ' ');
     }
 
     function escapeHtml(str) {
