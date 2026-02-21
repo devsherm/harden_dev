@@ -311,7 +311,10 @@ get "/pipeline/status" do
 end
 
 # Retrieve prompt for a specific controller and phase
-VALID_PROMPT_PHASES = %w[h_analyze h_harden h_fix_tests h_fix_ci h_verify].freeze
+VALID_PROMPT_PHASES = %w[
+  h_analyze h_harden h_fix_tests h_fix_ci h_verify
+  e_analyze e_apply e_fix_tests e_fix_ci e_verify
+].freeze
 
 get "/pipeline/:name/prompts/:phase" do
   content_type :json

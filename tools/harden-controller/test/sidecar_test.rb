@@ -277,6 +277,132 @@ class SidecarTest < PipelineTestCase
     end
   end
 
+  # ── safe_write grant enforcement tests ────────────────────
+
+  def setup_enhance_pipeline
+    # Create a pipeline with enhance_allowed_write_paths and lock_manager
+    # injected via instance_variable_set (as per plan item 6)
+    enhance_dir = File.join(@tmpdir, "app", "controllers")
+    FileUtils.mkdir_p(enhance_dir)
+    @lock_manager = LockManager.new
+    @pipeline.instance_variable_set(:@lock_manager, @lock_manager)
+    @pipeline.instance_variable_set(:@enhance_allowed_write_paths, ["app/controllers"])
+    enhance_dir
+  end
+
+  def test_safe_write_grant_id_nil_uses_allowed_write_paths
+    # When grant_id is nil, behavior is identical to existing safe_write
+    path = File.join(@controllers_dir, "posts_controller.rb")
+    File.write(path, "# original")
+
+    @pipeline.send(:safe_write, path, "# hardened", grant_id: nil)
+
+    assert_equal "# hardened", File.read(path)
+  end
+
+  def test_safe_write_with_valid_grant_succeeds
+    setup_enhance_pipeline
+    path = File.join(@controllers_dir, "posts_controller.rb")
+    File.write(path, "# original")
+
+    grant = @lock_manager.try_acquire(holder: "test", write_paths: [path])
+    refute_nil grant
+
+    @pipeline.send(:safe_write, path, "# enhanced", grant_id: grant.id)
+
+    assert_equal "# enhanced", File.read(path)
+  ensure
+    @lock_manager&.stop_reaper
+  end
+
+  def test_safe_write_invalid_grant_id_raises_lock_violation_error
+    setup_enhance_pipeline
+    path = File.join(@controllers_dir, "posts_controller.rb")
+    File.write(path, "# original")
+
+    err = assert_raises(LockViolationError) do
+      @pipeline.send(:safe_write, path, "# enhanced", grant_id: "nonexistent-grant-id")
+    end
+    assert_match(/invalid or unknown grant/i, err.message)
+  ensure
+    @lock_manager&.stop_reaper
+  end
+
+  def test_safe_write_expired_grant_raises_lock_violation_error
+    setup_enhance_pipeline
+    path = File.join(@controllers_dir, "posts_controller.rb")
+    File.write(path, "# original")
+
+    # Create a grant then mark it as released (simulating expiry)
+    grant = @lock_manager.try_acquire(holder: "test", write_paths: [path])
+    refute_nil grant
+    # Expire by setting expires_at to the past
+    grant.expires_at = Time.now - 1
+
+    err = assert_raises(LockViolationError) do
+      @pipeline.send(:safe_write, path, "# enhanced", grant_id: grant.id)
+    end
+    assert_match(/expired or been released/i, err.message)
+  ensure
+    @lock_manager&.stop_reaper
+  end
+
+  def test_safe_write_released_grant_raises_lock_violation_error
+    setup_enhance_pipeline
+    path = File.join(@controllers_dir, "posts_controller.rb")
+    File.write(path, "# original")
+
+    grant = @lock_manager.try_acquire(holder: "test", write_paths: [path])
+    refute_nil grant
+    @lock_manager.release(grant.id)
+
+    err = assert_raises(LockViolationError) do
+      @pipeline.send(:safe_write, path, "# enhanced", grant_id: grant.id)
+    end
+    assert_match(/expired or been released/i, err.message)
+  ensure
+    @lock_manager&.stop_reaper
+  end
+
+  def test_safe_write_path_not_in_grant_raises_lock_violation_error
+    setup_enhance_pipeline
+    path = File.join(@controllers_dir, "posts_controller.rb")
+    other_path = File.join(@controllers_dir, "comments_controller.rb")
+    File.write(path, "# original")
+    File.write(other_path, "# original other")
+
+    # Grant covers other_path but not path
+    grant = @lock_manager.try_acquire(holder: "test", write_paths: [other_path])
+    refute_nil grant
+
+    err = assert_raises(LockViolationError) do
+      @pipeline.send(:safe_write, path, "# enhanced", grant_id: grant.id)
+    end
+    assert_match(/not covered by grant/i, err.message)
+  ensure
+    @lock_manager&.stop_reaper
+  end
+
+  def test_safe_write_path_outside_enhance_allowed_raises_lock_violation_error
+    setup_enhance_pipeline
+    # Try to write to config/ which is outside enhance_allowed_write_paths (app/controllers)
+    config_dir = File.join(@tmpdir, "config")
+    FileUtils.mkdir_p(config_dir)
+    path = File.join(config_dir, "secrets.yml")
+    File.write(path, "original: content")
+
+    # Create a grant covering this path (lock_manager itself won't reject it)
+    grant = @lock_manager.try_acquire(holder: "test", write_paths: [path])
+    refute_nil grant
+
+    err = assert_raises(LockViolationError) do
+      @pipeline.send(:safe_write, path, "evil content", grant_id: grant.id)
+    end
+    assert_match(/escapes enhance allowed directories/i, err.message)
+  ensure
+    @lock_manager&.stop_reaper
+  end
+
   # ── Custom test_path_resolver tests ────────────────────────
 
   def test_custom_test_path_resolver

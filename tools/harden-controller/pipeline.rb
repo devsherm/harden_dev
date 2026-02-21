@@ -4,14 +4,23 @@ require "open3"
 require "fileutils"
 require "shellwords"
 require "securerandom"
+require "net/http"
+require "uri"
 require_relative "prompts"
 
 class Pipeline
-  ACTIVE_STATUSES = %w[h_analyzing h_hardening h_testing h_fixing_tests h_ci_checking h_fixing_ci h_verifying].freeze
+  ACTIVE_STATUSES = %w[
+    h_analyzing h_hardening h_testing h_fixing_tests
+    h_ci_checking h_fixing_ci h_verifying
+    e_analyzing e_extracting e_synthesizing
+    e_auditing e_planning_batches e_applying e_testing
+    e_fixing_tests e_ci_checking e_fixing_ci e_verifying
+  ].freeze
   CLAUDE_TIMEOUT = 120
   COMMAND_TIMEOUT = 60
   MAX_QUERIES = 50
   MAX_CLAUDE_CONCURRENCY = 12
+  MAX_API_CONCURRENCY = 20
   MAX_FIX_ATTEMPTS = 2
   MAX_CI_FIX_ATTEMPTS = 2
 
@@ -26,12 +35,16 @@ end
 require_relative "pipeline/process_management"
 require_relative "pipeline/claude_client"
 require_relative "pipeline/sidecar"
+require_relative "pipeline/shared_phases"
 require_relative "pipeline/orchestration"
+require_relative "pipeline/lock_manager"
+require_relative "pipeline/scheduler"
 
 class Pipeline
   include ProcessManagement
   include ClaudeClient
   include Sidecar
+  include SharedPhases
   include Orchestration
 
   # Synchronized accessors — never expose @state directly.
@@ -85,13 +98,21 @@ class Pipeline
                  allowed_write_paths: ["app/controllers"],
                  discovery_glob: "app/controllers/**/*_controller.rb",
                  discovery_excludes: ["application_controller"],
-                 test_path_resolver: nil)
+                 test_path_resolver: nil,
+                 enhance_sidecar_dir: ".enhance",
+                 enhance_allowed_write_paths: ["app/controllers", "app/views", "app/models", "app/services", "test/"],
+                 api_key: ENV["ANTHROPIC_API_KEY"],
+                 lock_manager: nil,
+                 scheduler: nil)
     @rails_root = rails_root
     @sidecar_dir = sidecar_dir
     @allowed_write_paths = allowed_write_paths
     @discovery_glob = discovery_glob
     @discovery_excludes = discovery_excludes
     @test_path_resolver = test_path_resolver || method(:default_derive_test_path)
+    @enhance_sidecar_dir = enhance_sidecar_dir
+    @enhance_allowed_write_paths = enhance_allowed_write_paths
+    @api_key = api_key
     @mutex = Mutex.new
     @threads = []
     @cancelled = false
@@ -108,6 +129,15 @@ class Pipeline
     @claude_semaphore = Mutex.new
     @claude_slots = ConditionVariable.new
     @claude_active = 0
+    @api_semaphore = Mutex.new
+    @api_slots = ConditionVariable.new
+    @api_active = 0
+    @lock_manager = lock_manager || LockManager.new
+    @scheduler = scheduler || Scheduler.new(
+      lock_manager: @lock_manager,
+      slot_available_fn: -> { @claude_active < MAX_CLAUDE_CONCURRENCY },
+      safe_thread_fn: ->(block = nil, &blk) { safe_thread(&(block || blk)) }
+    )
   end
 
   def reset!
@@ -125,12 +155,16 @@ class Pipeline
       @prompt_store.clear
       @queries.clear
       @claude_active = 0
+      @api_active = 0
     end
     # Second drain: catch threads that snuck in between shutdown and the
     # mutex block above (race window where safe_thread could still append).
     stragglers = @mutex.synchronize { @threads.dup }
     stragglers.each { |t| t.kill if t.alive? }
     stragglers.each { |t| t.join(2) }
+    # Clear enhance mode state
+    @lock_manager.release_all
+    @scheduler.stop
   end
 
   # ── Helpers ─────────────────────────────────────────────────
@@ -143,7 +177,16 @@ class Pipeline
           store = @prompt_store[wf[:name]]
           store ? wf.merge(prompts: store.transform_values { true }) : wf
         end
-        @cached_json = @state.merge(workflows: enriched, queries: @queries).to_json(*args)
+        lock_state = {
+          active_grants: @lock_manager.active_grants,
+          queue_depth:   @scheduler.queue_depth,
+          active_items:  @scheduler.active_items
+        }
+        @cached_json = @state.merge(
+          workflows: enriched,
+          queries: @queries,
+          locks: lock_state
+        ).to_json(*args)
         @last_serialized_at = now
       end
       @cached_json

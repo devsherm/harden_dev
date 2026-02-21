@@ -164,313 +164,87 @@ class Pipeline
     # ── Phase 3: Hardening ────────────────────────────────────
 
     def run_hardening(name)
-      source_path = ctrl_name = analysis_json = decision = nil
-      @mutex.synchronize do
-        workflow = @state[:workflows][name]
-
-        if workflow[:decision] && workflow[:decision]["action"] == "skip"
-          workflow[:status] = "h_skipped"
-          workflow[:completed_at] = Time.now.iso8601
-          return
-        end
-
-        workflow[:status] = "h_hardening"
-        source_path = workflow[:full_path]
-        ctrl_name = workflow[:name]
-        analysis_json = workflow[:analysis].to_json
-        decision = workflow[:decision]
-      end
-
-      begin
-        source = File.read(source_path)
-
-        ensure_sidecar_dir(source_path)
-        stg = staging_path(source_path)
-        FileUtils.rm_rf(stg)
-        FileUtils.mkdir_p(stg)
-
-        prompt = Prompts.harden(ctrl_name, source, analysis_json, decision, staging_dir: stg)
-        result = claude_call(prompt)
-        raise "Pipeline cancelled" if cancelled?
-        parsed = parse_json_response(result)
-
-        write_sidecar(source_path, "hardened.json", JSON.pretty_generate(parsed))
-
-        @mutex.synchronize do
-          wf = @state[:workflows][name]
-          wf[:original_source] = source
-          wf[:hardened] = parsed
-          wf[:status] = "h_hardened"
-          @prompt_store[name] ||= {}
-          @prompt_store[name][:h_harden] = prompt
-        end
-
-        copy_from_staging(stg)
-      rescue => e
-        @mutex.synchronize do
-          wf = @state[:workflows][name]
-          wf[:error] = sanitize_error(e.message)
-          wf[:status] = "error"
-          add_error("Hardening failed for #{name}: #{e.message}")
-        end
-        return
-      end
-
-      run_testing(name)
+      shared_apply(name,
+                   apply_prompt_fn: method(:hardening_apply_prompt),
+                   applied_status:  "h_hardened",
+                   applying_status: "h_hardening",
+                   skipped_status:  "h_skipped",
+                   sidecar_dir:     @sidecar_dir,
+                   prompt_key:      :h_harden,
+                   sidecar_file:    "hardened.json")
+      run_testing(name) if workflow_status(name) == "h_hardened"
     end
+
+    private
+
+    def hardening_apply_prompt(ctrl_name, source, analysis_json, decision, staging_dir:)
+      Prompts.harden(ctrl_name, source, analysis_json, decision, staging_dir: staging_dir)
+    end
+
+    public
 
     # ── Phase 3.5: Testing ─────────────────────────────────────
 
     def run_testing(name)
-      source_path = ctrl_name = nil
-      @mutex.synchronize do
-        workflow = @state[:workflows][name]
-        return unless workflow[:status] == "h_hardened"
-        workflow[:status] = "h_testing"
-        source_path = workflow[:full_path]
-        ctrl_name = workflow[:name]
-      end
-
-      test_file = derive_test_path(source_path)
-      test_cmd = if test_file && File.exist?(test_file)
-        ["bin/rails", "test", test_file]
-      else
-        ["bin/rails", "test"]
-      end
-
-      attempts = []
-      passed = false
-
-      begin
-        output, passed_run = spawn_with_timeout(*test_cmd, timeout: COMMAND_TIMEOUT, chdir: @rails_root)
-        raise "Pipeline cancelled" if cancelled?
-        attempts << { attempt: 1, command: test_cmd.join(" "), passed: passed_run, output: output }
-
-        if passed_run
-          passed = true
-        else
-          # Attempt Claude-assisted fixes
-          MAX_FIX_ATTEMPTS.times do |i|
-            analysis_json = nil
-            @mutex.synchronize do
-              wf = @state[:workflows][name]
-              wf[:status] = "h_fixing_tests"
-              analysis_json = wf[:analysis].to_json
-            end
-
-            hardened_source = File.read(source_path)
-
-            stg = staging_path(source_path)
-            FileUtils.rm_rf(stg)
-            FileUtils.mkdir_p(stg)
-
-            prompt = Prompts.fix_tests(ctrl_name, hardened_source, output, analysis_json, staging_dir: stg)
-
-            fix_result = claude_call(prompt)
-            raise "Pipeline cancelled" if cancelled?
-            parsed = parse_json_response(fix_result)
-
-            @mutex.synchronize do
-              @prompt_store[name] ||= {}
-              @prompt_store[name][:h_fix_tests] = prompt
-            end
-
-            copy_from_staging(stg)
-
-            # Re-run tests
-            @mutex.synchronize do
-              wf = @state[:workflows][name]
-              wf[:status] = "h_testing"
-            end
-
-            output, passed_run = spawn_with_timeout(*test_cmd, timeout: COMMAND_TIMEOUT, chdir: @rails_root)
-            raise "Pipeline cancelled" if cancelled?
-            attempts << {
-              attempt: i + 2,
-              command: test_cmd.join(" "),
-              passed: passed_run,
-              output: output,
-              fixes_applied: parsed["fixes_applied"],
-              hardening_reverted: parsed["hardening_reverted"]
-            }
-
-            if passed_run
-              passed = true
-              break
-            end
-          end
-        end
-
-        # Write test results sidecar
-        test_results = { controller: name, passed: passed, attempts: attempts }
-        write_sidecar(source_path, "test_results.json", JSON.pretty_generate(test_results))
-
-        @mutex.synchronize do
-          wf = @state[:workflows][name]
-          wf[:test_results] = test_results
-          if passed
-            wf[:status] = "h_tested"
-          else
-            wf[:status] = "h_tests_failed"
-            add_error("Tests still failing for #{name} after #{attempts.length} attempt(s)")
-            return
-          end
-        end
-      rescue => e
-        @mutex.synchronize do
-          wf = @state[:workflows][name]
-          wf[:error] = sanitize_error(e.message)
-          wf[:status] = "error"
-          add_error("Testing failed for #{name}: #{e.message}")
-        end
-        return
-      end
-
-      run_ci_checks(name)
+      shared_test(name,
+                  guard_status:        "h_hardened",
+                  testing_status:      "h_testing",
+                  fixing_status:       "h_fixing_tests",
+                  tested_status:       "h_tested",
+                  tests_failed_status: "h_tests_failed",
+                  fix_prompt_fn:       method(:hardening_fix_tests_prompt),
+                  prompt_key:          :h_fix_tests,
+                  next_phase_fn:       method(:run_ci_checks))
     end
+
+    private
+
+    def hardening_fix_tests_prompt(ctrl_name, source, output, analysis_json, staging_dir:)
+      Prompts.fix_tests(ctrl_name, source, output, analysis_json, staging_dir: staging_dir)
+    end
+
+    public
 
     # ── Phase 3.75: CI Checking ──────────────────────────────
 
     def run_ci_checks(name)
-      source_path = ctrl_name = controller_relative = nil
-      @mutex.synchronize do
-        workflow = @state[:workflows][name]
-        return unless workflow[:status] == "h_tested"
-        workflow[:status] = "h_ci_checking"
-        source_path = workflow[:full_path]
-        ctrl_name = workflow[:name]
-        controller_relative = workflow[:path]
-      end
-
-      begin
-        fix_attempts = []
-        checks = run_all_ci_checks(controller_relative)
-        raise "Pipeline cancelled" if cancelled?
-        passed = checks.all? { |c| c[:passed] }
-
-        unless passed
-          MAX_CI_FIX_ATTEMPTS.times do |i|
-            analysis_json = nil
-            @mutex.synchronize do
-              wf = @state[:workflows][name]
-              wf[:status] = "h_fixing_ci"
-              analysis_json = wf[:analysis].to_json
-            end
-
-            failed_output = checks.reject { |c| c[:passed] }.map { |c|
-              "== #{c[:name]} (#{c[:command]}) ==\n#{c[:output]}"
-            }.join("\n\n")
-
-            hardened_source = File.read(source_path)
-
-            stg = staging_path(source_path)
-            FileUtils.rm_rf(stg)
-            FileUtils.mkdir_p(stg)
-
-            prompt = Prompts.fix_ci(ctrl_name, hardened_source, failed_output, analysis_json, staging_dir: stg)
-
-            fix_result = claude_call(prompt)
-            raise "Pipeline cancelled" if cancelled?
-            parsed = parse_json_response(fix_result)
-
-            @mutex.synchronize do
-              @prompt_store[name] ||= {}
-              @prompt_store[name][:h_fix_ci] = prompt
-            end
-
-            copy_from_staging(stg)
-
-            fix_attempts << {
-              attempt: i + 1,
-              fixes_applied: parsed["fixes_applied"],
-              unfixable_issues: parsed["unfixable_issues"]
-            }
-
-            @mutex.synchronize do
-              wf = @state[:workflows][name]
-              wf[:status] = "h_ci_checking"
-            end
-
-            checks = run_all_ci_checks(controller_relative)
-            raise "Pipeline cancelled" if cancelled?
-            passed = checks.all? { |c| c[:passed] }
-            break if passed
-          end
-        end
-
-        ci_results = {
-          controller: name,
-          passed: passed,
-          checks: checks,
-          fix_attempts: fix_attempts
-        }
-        write_sidecar(source_path, "ci_results.json", JSON.pretty_generate(ci_results))
-
-        @mutex.synchronize do
-          wf = @state[:workflows][name]
-          wf[:ci_results] = ci_results
-          if passed
-            wf[:status] = "h_ci_passed"
-          else
-            wf[:status] = "h_ci_failed"
-            add_error("CI checks still failing for #{name} after #{fix_attempts.length} fix attempt(s)")
-            return
-          end
-        end
-      rescue => e
-        @mutex.synchronize do
-          wf = @state[:workflows][name]
-          wf[:error] = sanitize_error(e.message)
-          wf[:status] = "error"
-          add_error("CI checking failed for #{name}: #{e.message}")
-        end
-        return
-      end
-
-      run_verification(name)
+      shared_ci_check(name,
+                      guard_status:       "h_tested",
+                      ci_checking_status: "h_ci_checking",
+                      fixing_status:      "h_fixing_ci",
+                      ci_passed_status:   "h_ci_passed",
+                      ci_failed_status:   "h_ci_failed",
+                      fix_prompt_fn:      method(:hardening_fix_ci_prompt),
+                      prompt_key:         :h_fix_ci,
+                      next_phase_fn:      method(:run_verification))
     end
+
+    private
+
+    def hardening_fix_ci_prompt(ctrl_name, source, failed_output, analysis_json, staging_dir:)
+      Prompts.fix_ci(ctrl_name, source, failed_output, analysis_json, staging_dir: staging_dir)
+    end
+
+    public
 
     # ── Phase 4: Verification ─────────────────────────────────
 
     def run_verification(name)
-      source_path = ctrl_name = original_source = hardened_source = analysis_json = nil
-      @mutex.synchronize do
-        workflow = @state[:workflows][name]
-        return unless workflow[:status] == "h_ci_passed"
-        workflow[:status] = "h_verifying"
-        source_path = workflow[:full_path]
-        ctrl_name = workflow[:name]
-        original_source = workflow[:original_source]
-        analysis_json = workflow[:analysis].to_json
-      end
-
-      hardened_source = File.read(source_path)
-
-      begin
-        prompt = Prompts.verify(ctrl_name, original_source, hardened_source, analysis_json)
-        result = claude_call(prompt)
-        raise "Pipeline cancelled" if cancelled?
-        parsed = parse_json_response(result)
-
-        write_sidecar(source_path, "verification.json", JSON.pretty_generate(parsed))
-
-        @mutex.synchronize do
-          wf = @state[:workflows][name]
-          wf[:verification] = parsed
-          wf[:status] = "h_complete"
-          wf[:completed_at] = Time.now.iso8601
-          @prompt_store[name] ||= {}
-          @prompt_store[name][:h_verify] = prompt
-        end
-      rescue => e
-        @mutex.synchronize do
-          wf = @state[:workflows][name]
-          wf[:error] = sanitize_error(e.message)
-          wf[:status] = "error"
-          add_error("Verification failed for #{name}: #{e.message}")
-        end
-      end
+      shared_verify(name,
+                    guard_status:     "h_ci_passed",
+                    verifying_status: "h_verifying",
+                    verified_status:  "h_complete",
+                    verify_prompt_fn: method(:hardening_verify_prompt),
+                    prompt_key:       :h_verify)
     end
+
+    private
+
+    def hardening_verify_prompt(ctrl_name, original_source, hardened_source, analysis_json)
+      Prompts.verify(ctrl_name, original_source, hardened_source, analysis_json)
+    end
+
+    public
 
     # ── Ad-hoc Queries ──────────────────────────────────────────
 

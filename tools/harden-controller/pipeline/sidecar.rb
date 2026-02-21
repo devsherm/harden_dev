@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require_relative "lock_manager"
+
 class Pipeline
   module Sidecar
     private
@@ -22,10 +24,27 @@ class Pipeline
       File.write(path, content.end_with?("\n") ? content : "#{content}\n")
     end
 
-    def safe_write(path, content)
-      real = File.realpath(File.dirname(path))
-      unless @allowed_write_paths.any? { |p| real.start_with?("#{File.realpath(File.join(@rails_root, p))}/") }
-        raise "Path #{path} escapes allowed directories"
+    def safe_write(path, content, grant_id: nil)
+      if grant_id
+        # Enhance mode: validate against enhance_allowed_write_paths and the lock grant
+        allowlist = @enhance_allowed_write_paths
+        real = File.realpath(File.dirname(path))
+        unless allowlist.any? { |p| real.start_with?("#{File.realpath(File.join(@rails_root, p))}/") }
+          raise LockViolationError, "Path #{path} escapes enhance allowed directories"
+        end
+
+        grant = @lock_manager&.find_grant(grant_id)
+        raise LockViolationError, "Invalid or unknown grant: #{grant_id}" unless grant
+        raise LockViolationError, "Grant #{grant_id} has expired or been released" unless grant.active?
+        unless grant.write_paths.include?(path)
+          raise LockViolationError, "Path #{path} is not covered by grant #{grant_id}"
+        end
+      else
+        # Hardening mode: validate against allowed_write_paths (existing behavior)
+        real = File.realpath(File.dirname(path))
+        unless @allowed_write_paths.any? { |p| real.start_with?("#{File.realpath(File.join(@rails_root, p))}/") }
+          raise "Path #{path} escapes allowed directories"
+        end
       end
       File.write(path, content)
     end
