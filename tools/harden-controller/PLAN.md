@@ -125,20 +125,41 @@
   - **Implementation detail — reset!**: Add within the mutex block: `@lock_manager.release_all` (add this method to LockManager if needed), `@scheduler.stop` if running, `@api_active = 0`.
   - **Implementation detail — to_json**: Add to the merged hash: `locks: { active_grants: @lock_manager.active_grants, queue_depth: @scheduler.queue_depth, active_items: @scheduler.active_items }`.
 
-- [ ] 10. **Extract shared phases for apply/test/ci/verify**
+- [ ] 10a. **Create `shared_phases.rb`, extract `shared_apply` from `run_hardening`**
   - **Implements**: Spec § Code Organization (`pipeline/shared_phases.rb`), § Design Decisions (shared core orchestration for write phases, thin wrappers).
-  - **Completion**: `pipeline/shared_phases.rb` exists with `SharedPhases` module containing parameterized helpers for apply (harden/apply), test (with fix loop), CI check (with fix loop), and verify phases. Helpers accept mode-specific parameters: prompt generator, state keys, status names, sidecar/staging directory config, and optional `grant_id`. The staging→copy pattern (from item 4) is centralized in shared helpers — `copy_from_staging` called within the shared code. Existing methods in orchestration.rb (`run_hardening`, `run_testing`, `run_ci_checks`, `run_verification`) become thin wrappers that delegate to shared helpers with hardening-specific parameters. All existing hardening tests pass without modification to test call sites.
-  - **Scope boundary**: Does NOT add enhance mode orchestration (items 12-17). Only refactors existing hardening code into shared helpers. Routes and test call sites remain unchanged — they still call `run_hardening`, `run_testing`, etc.
-  - **Files**: `pipeline/shared_phases.rb` (new file), `pipeline/orchestration.rb` (refactor phase methods to thin wrappers), `pipeline.rb` (add `require_relative` and `include SharedPhases`)
+  - **Completion**: `pipeline/shared_phases.rb` exists with `SharedPhases` module containing `shared_apply`. `pipeline.rb` has `require_relative "pipeline/shared_phases"` and `include SharedPhases`. `run_hardening` in orchestration.rb is a thin wrapper that delegates to `shared_apply` with hardening-specific parameters. All existing hardening tests pass without modification.
+  - **Scope boundary**: Does NOT extract `shared_test`, `shared_ci_check`, or `shared_verify` (items 10b-10d). Does NOT add enhance mode orchestration. Only creates the module, establishes the pattern, and extracts `shared_apply`.
+  - **Files**: `pipeline/shared_phases.rb` (new file — module with `shared_apply`), `pipeline/orchestration.rb` (`run_hardening` becomes thin wrapper), `pipeline.rb` (add `require_relative` and `include SharedPhases`)
   - **Testing**: All existing hardening tests must pass without changes to their call sites or assertions. The refactoring is transparent to callers. If any test fails, the shared helper parameterization is wrong — fix the helper, not the test. Run `bundle exec rake test`.
-  - **Implementation detail — shared helper signatures**: Each helper accepts a hash of mode-specific config. Example for apply:
+  - **Implementation detail — shared helper signature**:
     ```ruby
     def shared_apply(name, apply_prompt_fn:, applied_status:, applying_status:,
                      skipped_status:, sidecar_dir:, staging_subdir: "staging",
                      grant_id: nil)
     ```
     The hardening wrapper calls it with `apply_prompt_fn: method(:hardening_apply_prompt)`, `applied_status: "h_hardened"`, `applying_status: "h_hardening"`, `skipped_status: "h_skipped"`, `sidecar_dir: @sidecar_dir`.
-  - **Implementation detail — extraction strategy**: (1) Copy the body of `run_hardening` into `shared_apply`, replacing every hardcoded status string with a parameter. (2) Copy the body of `run_testing` into `shared_test`, parameterizing statuses (`"h_testing"`, `"h_fixing_tests"`, `"h_tested"`, `"h_tests_failed"`) and prompt generator. (3) Same for `run_ci_checks` → `shared_ci_check`. (4) Same for `run_verification` → `shared_verify`. (5) Replace each original method body with a one-line delegation.
+  - **Implementation detail — extraction strategy**: Copy the body of `run_hardening` into `shared_apply`, replacing every hardcoded status string with a parameter. Replace `run_hardening` body with a one-line delegation to `shared_apply`.
+
+- [ ] 10b. **Extract `shared_test` from `run_testing`**
+  - **Implements**: Spec § Code Organization (`pipeline/shared_phases.rb`), § Design Decisions (shared core orchestration for write phases, thin wrappers).
+  - **Completion**: `shared_test` exists in `SharedPhases` module. `run_testing` in orchestration.rb is a thin wrapper that delegates to `shared_test` with hardening-specific parameters (statuses: `"h_testing"`, `"h_fixing_tests"`, `"h_tested"`, `"h_tests_failed"`, prompt generator). All existing tests pass.
+  - **Scope boundary**: Follows the pattern established in 10a. Does NOT extract `shared_ci_check` or `shared_verify`.
+  - **Files**: `pipeline/shared_phases.rb` (add `shared_test`), `pipeline/orchestration.rb` (`run_testing` becomes thin wrapper)
+  - **Testing**: All existing hardening tests must pass without changes. Run `bundle exec rake test`.
+
+- [ ] 10c. **Extract `shared_ci_check` from `run_ci_checks`**
+  - **Implements**: Spec § Code Organization (`pipeline/shared_phases.rb`), § Design Decisions (shared core orchestration for write phases, thin wrappers).
+  - **Completion**: `shared_ci_check` exists in `SharedPhases` module. `run_ci_checks` in orchestration.rb is a thin wrapper. All existing tests pass.
+  - **Scope boundary**: Follows the pattern established in 10a. Does NOT extract `shared_verify`.
+  - **Files**: `pipeline/shared_phases.rb` (add `shared_ci_check`), `pipeline/orchestration.rb` (`run_ci_checks` becomes thin wrapper)
+  - **Testing**: All existing hardening tests must pass without changes. Run `bundle exec rake test`.
+
+- [ ] 10d. **Extract `shared_verify` from `run_verification`**
+  - **Implements**: Spec § Code Organization (`pipeline/shared_phases.rb`), § Design Decisions (shared core orchestration for write phases, thin wrappers).
+  - **Completion**: `shared_verify` exists in `SharedPhases` module. `run_verification` in orchestration.rb is a thin wrapper. All existing tests pass. All four shared phase helpers are now complete.
+  - **Scope boundary**: Completes the shared phases extraction. Does NOT add enhance mode orchestration (items 12-17). Routes and test call sites remain unchanged — they still call `run_hardening`, `run_testing`, etc.
+  - **Files**: `pipeline/shared_phases.rb` (add `shared_verify`), `pipeline/orchestration.rb` (`run_verification` becomes thin wrapper)
+  - **Testing**: All existing hardening tests must pass without changes. Run `bundle exec rake test`.
 
 - [ ] 11. **Add all enhance mode prompt templates**
   - **Implements**: Spec § Code Organization (`prompts.rb` — enhance prompt templates), § Enhance Mode phase details (E0-E10 inputs and outputs).
@@ -161,7 +182,7 @@
 - [ ] 12. **Implement enhance analysis phase (E0)**
   - **Implements**: Spec § Enhance Mode (E0 — Analyze), § Persistence (analysis.json), § State Model (enhance workflow fields).
   - **Completion**: `pipeline/enhance_orchestration.rb` exists with `EnhanceOrchestration` module. `run_enhance_analysis` method: reads controller source + views + routes + related models + hardening verification report, calls `claude -p` with `Prompts.e_analyze`, parses response, writes `analysis.json` to `.enhance/` sidecar, stores research topic prompts in workflow. Workflow status transitions: entry from `h_complete` or `e_enhance_complete` → `e_analyzing` → `e_awaiting_research`. Workflow fields populated: `e_analysis`, `research_topics` (array of topic objects with `prompt`, `status: "pending"`, `result: nil`). Mode field set to `"enhance"`. All enhance analysis tests pass.
-  - **Scope boundary**: Does NOT implement research phase (item 13). Does NOT implement Scheduler dispatch (the orchestration method is called directly; Scheduler integration happens in item 18 routes). Only creates the enhance orchestration file and E0 method.
+  - **Scope boundary**: Does NOT implement research phase (item 13). Does NOT implement Scheduler dispatch (the orchestration method is called directly; Scheduler integration happens in item 20 routes). Only creates the enhance orchestration file and E0 method.
   - **Files**: `pipeline/enhance_orchestration.rb` (new file), `pipeline.rb` (add require_relative and include), `test/enhance_analysis_test.rb` (new file)
   - **Testing**: Test per Spec § Test Organization — enhance_analysis_test.rb covers: happy path (analysis produces structured output + research topics), hardening prerequisite check (must be `h_complete` or `e_enhance_complete`), error handling (claude -p failure sets `error` status), sidecar write verification. Stub `claude_call`. Run `bundle exec rake test`.
   - **Implementation detail — enhance sidecar path**: Use `@enhance_sidecar_dir` instead of `@sidecar_dir`. The sidecar helpers in sidecar.rb use `@sidecar_dir`, so enhance orchestration should call `sidecar_path` with a locally overridden directory, or compute the path directly: `File.join(File.dirname(source_path), @enhance_sidecar_dir, ctrl_name, filename)`.
@@ -215,7 +236,7 @@
 
 - [ ] 19. **Implement batch execution phases (E7-E10)**
   - **Implements**: Spec § Enhance Mode (E7-E10 — Apply/Test/CI/Verify), § Design Decisions (sequential batches within a controller, parallel across controllers), § Staging Write Pattern (enhance staging), § LockManager grant lifecycle.
-  - **Completion**: `run_batch_execution` method: iterates through approved batches sequentially within a controller. For each batch: acquires write locks via LockManager (`acquire` with timeout), runs the full E7→E10 chain via shared phases (from item 10) with enhance-mode-specific parameters (prompts from item 11, enhance sidecar/staging directories, grant_id for safe_write enforcement). Grant held throughout the chain, renewed after each `claude -p` return. Grant released via `ensure` block on completion or error. Staging directory: `.enhance/<ctrl>/<batch_id>/staging/`. Workflow tracks `current_batch_id`. Status transitions per batch: `e_applying` → `e_testing` / `e_fixing_tests` → `e_ci_checking` / `e_fixing_ci` → `e_verifying` → `e_batch_complete`. When last batch completes, workflow advances to `e_enhance_complete`. Fix loop exhaustion → `e_tests_failed` or `e_ci_failed` (grant released, retry re-runs from E7). All tests pass.
+  - **Completion**: `run_batch_execution` method: iterates through approved batches sequentially within a controller. For each batch: acquires write locks via LockManager (`acquire` with timeout), runs the full E7→E10 chain via shared phases (from item 10a-10d) with enhance-mode-specific parameters (prompts from item 11, enhance sidecar/staging directories, grant_id for safe_write enforcement). Grant held throughout the chain, renewed after each `claude -p` return. Grant released via `ensure` block on completion or error. Staging directory: `.enhance/<ctrl>/<batch_id>/staging/`. Workflow tracks `current_batch_id`. Status transitions per batch: `e_applying` → `e_testing` / `e_fixing_tests` → `e_ci_checking` / `e_fixing_ci` → `e_verifying` → `e_batch_complete`. When last batch completes, workflow advances to `e_enhance_complete`. Fix loop exhaustion → `e_tests_failed` or `e_ci_failed` (grant released, retry re-runs from E7). All tests pass.
   - **Scope boundary**: Does NOT implement cross-controller parallelism via Scheduler (the orchestration method handles one controller's batches; the Scheduler dispatches across controllers in item 20). Does NOT modify shared phases — only calls them with enhance parameters.
   - **Files**: `pipeline/enhance_orchestration.rb` (add `run_batch_execution`), `test/batch_execution_test.rb` (new file)
   - **Testing**: Test per Spec § Test Organization — batch apply/test/ci/verify with lock grants (stub LockManager), shared core orchestration delegation, sequential batch chain (batch 1 completes before batch 2 starts), current_batch_id tracking, grant lifecycle (acquired at E7, renewed on claude -p return, released on completion/error via ensure), e_enhance_complete on last batch, e_tests_failed/e_ci_failed with grant release. Run `bundle exec rake test`.
