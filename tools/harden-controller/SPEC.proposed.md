@@ -487,7 +487,7 @@ Enhance mode adds UI for: research topic management (API call vs manual paste), 
 
 - **Process groups for subprocess management**: `spawn_with_timeout` creates subprocesses with `pgroup: true` and kills via `-TERM`/`-KILL` on the process group. This prevents orphaned child processes (e.g., if `claude -p` spawns sub-processes).
 
-- **Prompt store for debugging**: Prompts sent to `claude -p` are stored in `@prompt_store` (keyed by controller name and phase) and exposed via GET `/pipeline/:name/prompts/:phase`. The route validates the phase against `VALID_PROMPT_PHASES` and returns 404 for unrecognized phases. The `to_json` method enriches each workflow entry with a `prompts` key — a hash mapping stored prompt phases to `true`, indicating which phases have stored prompts available. The frontend uses this to render "Copy Prompt" buttons so the operator can reproduce or debug any phase's claude call.
+- **Prompt store for debugging**: Prompts sent to `claude -p` are stored in `@prompt_store` (keyed by controller name and phase) and exposed via GET `/pipeline/:name/prompts/:phase`. The route validates the phase against `VALID_PROMPT_PHASES` and returns 404 for unrecognized phases. `VALID_PROMPT_PHASES` includes all phases that call `claude -p`: hardening (`analyze`, `harden`, `fix_tests`, `fix_ci`, `verify`) and enhance (`e_analyze`, `e_extract`, `e_synthesize`, `e_audit`, `e_batch_plan`, `e_apply`, `e_fix_tests`, `e_fix_ci`, `e_verify`). Research (E1) is excluded — it uses the Messages API, not `claude -p`. The `to_json` method enriches each workflow entry with a `prompts` key — a hash mapping stored prompt phases to `true`, indicating which phases have stored prompts available. The frontend uses this to render "Copy Prompt" buttons so the operator can reproduce or debug any phase's claude call.
 
 - **SSE with change detection**: The `/events` endpoint polls `to_json` every 500ms and sends only when the JSON differs from the last sent value. `to_json` itself is cached for 100ms to avoid redundant serialization under concurrent SSE connections.
 
@@ -626,7 +626,7 @@ All guards operate atomically under `@mutex`. On success, the status is updated 
 | GET | `/events` | SSE stream of pipeline state |
 | GET | `/pipeline/:name/prompts/:phase` | Retrieve stored prompt for debugging (phase must be in `VALID_PROMPT_PHASES`) |
 | POST | `/enhance/analyze` | Start enhance analysis for a controller (requires `h_complete` or `e_enhance_complete`) |
-| POST | `/enhance/research` | Submit research result (manual paste) for a topic |
+| POST | `/enhance/research` | Submit research result (manual paste) or reject a topic (via `action` body parameter: `"paste"` or `"reject"`) |
 | POST | `/enhance/research/api` | Trigger Claude API research (with web search) for a topic |
 | POST | `/enhance/decisions` | Submit enhance item decisions (TODO/DEFER/REJECT) |
 | POST | `/enhance/batches/approve` | Approve batch plan and start execution (requires `e_awaiting_batch_approval`) |

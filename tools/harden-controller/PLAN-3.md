@@ -37,7 +37,18 @@
   - **Scope boundary**: Does NOT implement research phase (item 13). Does NOT implement Scheduler dispatch (the orchestration method is called directly; Scheduler integration happens in item 20 routes). Only creates the enhance orchestration file and E0 method.
   - **Files**: `pipeline/enhance_orchestration.rb` (new file), `pipeline.rb` (add require_relative and include), `test/enhance_analysis_test.rb` (new file)
   - **Testing**: Test per Spec § Test Organization — enhance_analysis_test.rb covers: happy path (analysis produces structured output + research topics), hardening prerequisite check (must be `h_complete` or `e_enhance_complete`), error handling (claude -p failure sets `error` status), sidecar write verification. Stub `claude_call`. Run `bundle exec rake test`.
-  - **Implementation detail — enhance sidecar path**: Use `@enhance_sidecar_dir` instead of `@sidecar_dir`. The sidecar helpers in sidecar.rb use `@sidecar_dir`, so enhance orchestration should call `sidecar_path` with a locally overridden directory, or compute the path directly: `File.join(File.dirname(source_path), @enhance_sidecar_dir, ctrl_name, filename)`.
+  - **Implementation detail — enhance sidecar path helper**: Add an `enhance_sidecar_path(target_path, filename)` helper method that computes paths under `.enhance/`:
+    ```ruby
+    def enhance_sidecar_path(target_path, filename)
+      File.join(
+        File.dirname(target_path),
+        @enhance_sidecar_dir,
+        File.basename(target_path, ".rb"),
+        filename
+      )
+    end
+    ```
+    Use this helper in all enhance orchestration methods (items 13-19) instead of computing paths ad-hoc. This reduces duplication and path-computation errors.
   - **Implementation detail — workflow field additions**: When entering enhance mode, set `wf[:mode] = "enhance"` and add the new fields: `wf[:e_analysis] = parsed`, `wf[:research_topics] = parsed["research_topics"].map { |t| { prompt: t, status: "pending", result: nil } }`.
 
 - [ ] 13. **Implement research phase (E1)**
@@ -47,20 +58,21 @@
   - **Files**: `pipeline/enhance_orchestration.rb` (add research methods), `test/research_test.rb` (new file)
   - **Testing**: Test per Spec § Test Organization — research_test.rb covers: per-topic state transitions (pending → researching → completed, pending → completed via paste, pending → rejected), API research path (stub api_call, verify web search tool request), manual paste, topic rejection, completion tracking (auto-advance when all non-rejected topics done), API failure recovery (topic reverts to pending), concurrent API call bounding. Run `bundle exec rake test`.
   - **Implementation detail — topic slug**: Derive from the topic prompt: `topic_prompt.downcase.gsub(/[^a-z0-9]+/, "_").slice(0, 50)`.
-  - **Implementation detail — completion check**: After each topic state change (completed, rejected), check: `topics.reject { |t| t[:status] == "rejected" }.all? { |t| t[:status] == "completed" }`. If true, set workflow status to `"e_extracting"` and trigger the E2→E4 chain (or just set the status — the route handler or Scheduler will dispatch the chain).
+  - **Implementation detail — research thread type**: `submit_research_api` uses a raw `Thread.new` (NOT `safe_thread`) with a `begin/rescue` block. On success: set topic status to `completed`, store result, write research MD file, run completion check. On failure: revert topic status to `pending`, log the error via `add_error`, do NOT change workflow status. `safe_thread` is too aggressive — it sets the entire workflow to `error` on exception, but the spec requires per-topic recovery (`pending` on API failure).
+  - **Implementation detail — completion check**: After each topic state change (completed, rejected), check: `topics.reject { |t| t[:status] == "rejected" }.all? { |t| t[:status] == "completed" }`. On completion, set workflow status to `e_extracting`, then enqueue `run_extraction_chain` via Scheduler (with `safe_thread` fallback when Scheduler is unavailable).
   - **Implementation detail — research_status.json**: On each topic state change, write the current topic statuses to `.enhance/<ctrl>/research_status.json` for resume capability.
 
 - [ ] 14. **Implement extract phase (E2)**
   - **Implements**: Spec § Enhance Mode (E2 — Extract), § Persistence (extract.json).
   - **Completion**: `run_extraction` method: reads analysis + research results, calls `claude -p` with `Prompts.extract`, produces POSSIBLE items list, writes `extract.json` to sidecar. Status transitions: `e_extracting` (set by caller or completion check) → method runs → sets up for synthesis. All extraction tests pass.
-  - **Scope boundary**: Does NOT implement synthesis or audit. Only implements E2. The E2→E3→E4 chaining is handled by a separate chain entry point method (item 16).
+  - **Scope boundary**: Does NOT implement synthesis or audit. Only implements E2. The E2→E3→E4 chaining is handled by a separate chain entry point method (item 16). `run_extraction` is a pure work method — it reads input, calls claude, writes sidecar, and returns. It does NOT set workflow status. Status transitions (`e_extracting` → `e_synthesizing` → `e_auditing` → `e_awaiting_decisions`) are managed solely by `run_extraction_chain` (item 16).
   - **Files**: `pipeline/enhance_orchestration.rb` (add `run_extraction`), `test/extraction_test.rb` (new file)
   - **Testing**: Test per Spec § Test Organization — extraction_test.rb covers: item generation from research results, POSSIBLE item output format, error handling, sidecar write. Stub `claude_call`. Run `bundle exec rake test`.
 
 - [ ] 15. **Implement synthesis phase (E3)**
   - **Implements**: Spec § Enhance Mode (E3 — Synthesize), § Persistence (synthesize.json).
   - **Completion**: `run_synthesis` method: reads analysis + POSSIBLE items + controller source, calls `claude -p` with `Prompts.synthesize`, produces READY items with impact/effort ratings, writes `synthesize.json`. Status transition: `e_synthesizing`. All synthesis tests pass.
-  - **Scope boundary**: Does NOT implement audit. Only implements E3.
+  - **Scope boundary**: Does NOT implement audit. Only implements E3. `run_synthesis` is a pure work method — it reads input, calls claude, writes sidecar, and returns. It does NOT set workflow status. Status transitions are managed by `run_extraction_chain` (item 16).
   - **Files**: `pipeline/enhance_orchestration.rb` (add `run_synthesis`), `test/synthesis_test.rb` (new file)
   - **Testing**: Test per Spec § Test Organization — synthesis_test.rb covers: impact/effort rating, filtering already-implemented items, READY item generation, sidecar write. Stub `claude_call`. Run `bundle exec rake test`.
 
@@ -86,32 +98,50 @@
   - **Files**: `pipeline/enhance_orchestration.rb` (add `run_batch_planning`, `replan_batches`), `test/batch_planning_test.rb` (new file)
   - **Testing**: Test per Spec § Test Organization — batch grouping by effort/overlap/dependencies, write target declaration, batch plan approval flow, re-planning with notes (status cycling), sidecar write. Run `bundle exec rake test`.
 
-- [ ] 19. **Implement batch execution phases (E7-E10)**
-  - **Implements**: Spec § Enhance Mode (E7-E10 — Apply/Test/CI/Verify), § Design Decisions (sequential batches within a controller, parallel across controllers), § Staging Write Pattern (enhance staging), § LockManager grant lifecycle.
-  - **Completion**: `run_batch_execution` method: iterates through approved batches sequentially within a controller. For each batch: acquires write locks via LockManager (`acquire` with timeout), runs the full E7→E10 chain via shared phases (from item 10a-10d) with enhance-mode-specific parameters (prompts from item 11, enhance sidecar/staging directories, grant_id for safe_write enforcement). Grant held throughout the chain, renewed after each `claude -p` return. Grant released via `ensure` block on completion or error. Staging directory: `.enhance/<ctrl>/<batch_id>/staging/`. Workflow tracks `current_batch_id`. Status transitions per batch: `e_applying` → `e_testing` / `e_fixing_tests` → `e_ci_checking` / `e_fixing_ci` → `e_verifying` → `e_batch_complete`. When last batch completes, workflow advances to `e_enhance_complete`. Fix loop exhaustion → `e_tests_failed` or `e_ci_failed` (grant released, retry re-runs from E7). All tests pass.
-  - **Scope boundary**: Does NOT implement cross-controller parallelism via Scheduler (the orchestration method handles one controller's batches; the Scheduler dispatches across controllers in item 20). Does NOT modify shared phases — only calls them with enhance parameters.
+- [ ] 19a. **Parameterize shared phases for enhance mode**
+  - **Implements**: Prerequisite for items 19b-19c. Addresses gaps in shared phase methods that prevent enhance mode callers from directing sidecar output and staging paths correctly.
+  - **Completion**: `shared_test` and `shared_ci_check` accept `sidecar_dir:` and `staging_subdir:` kwargs (defaulting to current hardening behavior), matching the pattern established by `shared_apply`. `shared_apply` and `shared_verify` accept `analysis_key:` kwarg (defaulting to `:analysis`) so enhance callers can pass `analysis_key: :e_analysis`. All four shared methods (`shared_apply`, `shared_test`, `shared_ci_check`, `shared_verify`) accept a `sidecar_output_dir:` kwarg for directing sidecar output files (`apply.json`, `test_results.json`, `ci_results.json`, `verification.json`) to batch-specific directories like `batches/<batch_id>/`. Existing hardening callers use defaults — no behavior change. All existing tests pass.
+  - **Scope boundary**: Does NOT implement enhance orchestration. Only parameterizes shared phases for both-mode usage. Mirrors the pattern PLAN-2 used for items 10a-10d.
+  - **Files**: `pipeline/shared_phases.rb` (add kwargs to `shared_test`, `shared_ci_check`, `shared_apply`, `shared_verify`), `test/pipeline_testing_test.rb` (add kwargs tests), `test/pipeline_ci_checks_test.rb` (add kwargs tests), `test/pipeline_hardening_test.rb` (verify no behavior change), `test/pipeline_verification_test.rb` (add kwargs tests)
+  - **Testing**: Verify new kwargs work: `shared_test` and `shared_ci_check` with custom `sidecar_dir:`/`staging_subdir:`, `shared_apply` and `shared_verify` with `analysis_key: :e_analysis`, all four methods with `sidecar_output_dir:` pointing to a batch subdirectory. Verify existing hardening tests still pass with defaults. Run `bundle exec rake test`.
+
+- [ ] 19b. **Implement batch execution iteration logic (E7-E10)**
+  - **Implements**: Spec § Enhance Mode (E7-E10 — Apply/Test/CI/Verify), § Design Decisions (sequential batches within a controller, parallel across controllers), § Staging Write Pattern (enhance staging).
+  - **Completion**: `run_batch_execution` method: iterates through approved batches sequentially within a controller. For each batch: runs the full E7→E10 chain via shared phases (from items 10a-10d and 19a) with enhance-mode-specific parameters (prompts from item 11, enhance sidecar/staging directories). Staging directory: `.enhance/<ctrl>/batches/<batch_id>/staging/`. Workflow tracks `current_batch_id`. Status transitions per batch: `e_applying` → `e_testing` / `e_fixing_tests` → `e_ci_checking` / `e_fixing_ci` → `e_verifying` → `e_batch_complete`. When last batch completes, workflow advances to `e_enhance_complete`. Fix loop exhaustion → `e_tests_failed` or `e_ci_failed` (retry re-runs from E7). All tests pass.
+  - **Scope boundary**: Does NOT implement grant lifecycle (item 19c). Does NOT implement cross-controller parallelism via Scheduler (the orchestration method handles one controller's batches; the Scheduler dispatches across controllers in item 20). Only implements the batch iteration loop and delegation to shared phases.
   - **Files**: `pipeline/enhance_orchestration.rb` (add `run_batch_execution`), `test/batch_execution_test.rb` (new file)
-  - **Testing**: Test per Spec § Test Organization — batch apply/test/ci/verify with lock grants (stub LockManager), shared core orchestration delegation, sequential batch chain (batch 1 completes before batch 2 starts), current_batch_id tracking, grant lifecycle (acquired at E7, renewed on claude -p return, released on completion/error via ensure), e_enhance_complete on last batch, e_tests_failed/e_ci_failed with grant release. Run `bundle exec rake test`.
-  - **Implementation detail — grant renewal**: After each `claude_call` returns within a batch, call `@lock_manager.renew(grant_id: grant.id)`. This extends the TTL so long-running batches don't expire.
-  - **Implementation detail — grant release via ensure**: Wrap the batch loop body in `begin...ensure` that calls `@lock_manager.release(grant_id: grant.id)` if grant is non-nil.
-  - **Implementation detail — calling shared phases**: All four shared methods (`shared_apply`, `shared_test`, `shared_ci_check`, `shared_verify`) accept `grant_id:` and propagate it to `copy_from_staging`, which in turn passes it to `safe_write`. Enhance mode callers **must** pass `grant_id: grant.id` and `phase_label: "Enhance"` (or batch-specific label). Example:
+  - **Testing**: Test per Spec § Test Organization — batch apply/test/ci/verify delegation to shared phases, sequential batch chain (batch 1 completes before batch 2 starts), current_batch_id tracking, e_enhance_complete on last batch, e_tests_failed/e_ci_failed status transitions. Stub shared phases. Run `bundle exec rake test`.
+  - **Implementation detail — calling shared phases**: All four shared methods accept the kwargs added in 19a. Enhance mode callers pass enhance-specific values. Lambda signatures must match what the shared methods pass — Ruby lambdas enforce strict arity. Example:
     ```ruby
     shared_apply(name,
-      apply_prompt_fn: -> { Prompts.e_apply(batch_items, analysis, source, staging_dir) },
+      apply_prompt_fn: ->(_name, _src, _aj, _dec, staging_dir:) {
+        Prompts.e_apply(batch_items, analysis, source, staging_dir)
+      },
       applying_status: "e_applying",
       applied_status: "e_batch_applied",  # internal gate
       skipped_status: nil,  # no skip in enhance
       sidecar_dir: @enhance_sidecar_dir,
-      staging_subdir: "#{batch_id}/staging",
-      grant_id: grant.id,
+      staging_subdir: "batches/#{batch_id}/staging",
+      sidecar_output_dir: "batches/#{batch_id}",
+      analysis_key: :e_analysis,
       phase_label: "Enhance apply"
     )
     ```
-    Similarly for `shared_test`, `shared_ci_check`, `shared_verify` — pass `grant_id: grant.id` and an appropriate `phase_label:`.
+    Similarly for `shared_test` (fix_prompt_fn arity: `(_name, _src, _output, _aj, staging_dir:)`), `shared_ci_check`, and `shared_verify` — pass enhance-specific kwargs and match shared method call signatures.
+
+- [ ] 19c. **Integrate LockManager grant lifecycle into batch execution**
+  - **Implements**: Spec § LockManager grant lifecycle, § Design Decisions (grant held through entire batch lifecycle).
+  - **Completion**: `run_batch_execution` acquires write locks via LockManager (`acquire` with timeout) before each batch's E7→E10 chain. Grant held throughout the chain, renewed after each `claude -p` return. Grant released via `ensure` block on completion or error. `grant_id` passed to all shared phase calls for `safe_write` enforcement. On fix loop exhaustion (`e_tests_failed` / `e_ci_failed`), grant is released; retry re-acquires locks. All tests pass.
+  - **Scope boundary**: Does NOT modify LockManager itself (implemented in PLAN-2). Only integrates grant acquisition/renewal/release into the batch execution loop from 19b.
+  - **Files**: `pipeline/enhance_orchestration.rb` (update `run_batch_execution`), `test/batch_execution_test.rb` (add grant lifecycle tests)
+  - **Testing**: Test per Spec § Test Organization — grant lifecycle: acquired at E7, renewed on claude -p return, released on completion/error via ensure. Grant passed to shared phase calls (`grant_id: grant.id`). e_tests_failed/e_ci_failed with grant release. Retry re-acquires locks. Stub LockManager. Run `bundle exec rake test`.
+  - **Implementation detail — grant renewal**: After each `claude_call` returns within a batch, call `@lock_manager.renew(grant_id: grant.id)`. This extends the TTL so long-running batches don't expire.
+  - **Implementation detail — grant release via ensure**: Wrap the batch loop body in `begin...ensure` that calls `@lock_manager.release(grant_id: grant.id)` if grant is non-nil.
+  - **Implementation detail — grant_id propagation**: Pass `grant_id: grant.id` to all shared phase calls (`shared_apply`, `shared_test`, `shared_ci_check`, `shared_verify`). The shared methods propagate it to `copy_from_staging`, which passes it to `safe_write`.
 
 - [ ] 20. **Add enhance mode server routes**
   - **Implements**: Spec § Integration (HTTP Routes — all `/enhance/*` routes), § Server Layer (enhance routes use Scheduler for dispatch).
-  - **Completion**: All enhance routes exist per Spec § HTTP Routes: `POST /enhance/analyze` (starts E0, uses Scheduler if available), `POST /enhance/research` (manual paste), `POST /enhance/research/api` (API research), `POST /enhance/decisions` (E5), `POST /enhance/batches/approve` (E6 approval, starts batch execution), `POST /enhance/batches/replan` (E6 rejection with notes), `POST /enhance/retry` (re-run last failed enhance phase), `POST /enhance/retry-tests` (retry batch from E7), `POST /enhance/retry-ci` (retry batch from E7), `GET /enhance/locks` (lock state). Analyze route dispatches via Scheduler when available, falls back to `safe_thread`. Human-gate routes update state directly. All routes use `try_transition` with appropriate guards (including compound guard `["h_complete", "e_enhance_complete"]` for analyze). All route behavior verified.
+  - **Completion**: All enhance routes exist per Spec § HTTP Routes: `POST /enhance/analyze` (starts E0, uses Scheduler if available), `POST /enhance/research` (manual paste or topic rejection via `action` body parameter), `POST /enhance/research/api` (API research), `POST /enhance/decisions` (E5), `POST /enhance/batches/approve` (E6 approval, starts batch execution), `POST /enhance/batches/replan` (E6 rejection with notes), `POST /enhance/retry` (re-run last failed enhance phase), `POST /enhance/retry-tests` (retry batch from E7), `POST /enhance/retry-ci` (retry batch from E7), `GET /enhance/locks` (lock state). Analyze route dispatches via Scheduler when available, falls back to `safe_thread`. Human-gate routes update state directly. All routes use `try_transition` with appropriate guards (including compound guard `["h_complete", "e_enhance_complete"]` for analyze). All route behavior verified.
   - **Scope boundary**: Does NOT add frontend UI (items 22-23). Only adds server-side route handlers.
   - **Files**: `server.rb` (add all `/enhance/*` routes)
   - **Testing**: Route tests via rack-test in a new `test/enhance_routes_test.rb` file. Verify: correct try_transition guards, Scheduler dispatch for analyze, JSON body parameter handling, error responses for invalid states. Run `bundle exec rake test`.
@@ -119,7 +149,7 @@
     ```ruby
     post '/enhance/analyze' do
       content_type :json
-      body = parse_json_body
+      body = JSON.parse(request.body.read)
       controller = body["controller"]
       halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
       ok, err = $pipeline.try_transition(controller, guard: ["h_complete", "e_enhance_complete"], to: "e_analyzing")
@@ -132,6 +162,12 @@
       { status: "enhancing", controller: controller }.to_json
     end
     ```
+  - **Implementation detail — research route handles paste and reject**: `POST /enhance/research` accepts a JSON body with an `action` field: `"paste"` (with `result` field) or `"reject"`. Example bodies:
+    ```json
+    {"controller": "posts_controller", "topic_index": 0, "action": "paste", "result": "..."}
+    {"controller": "posts_controller", "topic_index": 0, "action": "reject"}
+    ```
+    The route dispatches to `submit_research` (paste) or `reject_research_topic` (reject) based on the action. This avoids a separate `/enhance/research/reject` endpoint.
 
 - [ ] 21. **Enhance discovery to scan `.enhance/` sidecars for resume**
   - **Implements**: Spec § Persistence (Resume on restart — resume rules), § Design Decisions (sidecar files enable resumability).
