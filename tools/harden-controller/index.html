@@ -193,6 +193,29 @@
     .workflow-dot.error { background: var(--red); }
     .workflow-dot.none { background: var(--text-muted); opacity: 0.2; }
 
+    /* enhance mode workflow dot colors */
+    .workflow-dot.e_analyzing { background: var(--accent); animation: pulse 1s infinite; }
+    .workflow-dot.e_awaiting_research { background: var(--yellow); }
+    .workflow-dot.e_extracting { background: var(--accent); animation: pulse 1s infinite; }
+    .workflow-dot.e_synthesizing { background: #a78bfa; animation: pulse 1s infinite; }
+    .workflow-dot.e_auditing { background: #818cf8; animation: pulse 1s infinite; }
+    .workflow-dot.e_awaiting_decisions { background: var(--yellow); }
+    .workflow-dot.e_planning_batches { background: #38bdf8; animation: pulse 1s infinite; }
+    .workflow-dot.e_awaiting_batch_approval { background: var(--yellow); }
+    .workflow-dot.e_applying { background: #a78bfa; animation: pulse 1s infinite; }
+    .workflow-dot.e_batch_applied { background: #818cf8; }
+    .workflow-dot.e_testing { background: #38bdf8; animation: pulse 1s infinite; }
+    .workflow-dot.e_fixing_tests { background: #f472b6; animation: pulse 1s infinite; }
+    .workflow-dot.e_batch_tested { background: #22d3ee; }
+    .workflow-dot.e_tests_failed { background: var(--red); }
+    .workflow-dot.e_ci_checking { background: #2dd4bf; animation: pulse 1s infinite; }
+    .workflow-dot.e_fixing_ci { background: #c084fc; animation: pulse 1s infinite; }
+    .workflow-dot.e_batch_ci_passed { background: #2dd4bf; }
+    .workflow-dot.e_ci_failed { background: var(--red); }
+    .workflow-dot.e_verifying { background: #818cf8; animation: pulse 1s infinite; }
+    .workflow-dot.e_batch_complete { background: #22d3ee; }
+    .workflow-dot.e_enhance_complete { background: var(--green); }
+
     @keyframes pulse {
       0%, 100% { opacity: 1; }
       50% { opacity: 0.3; }
@@ -279,6 +302,41 @@
     .status-h_complete .status-dot { background: var(--green); }
     .status-h_skipped .status-dot { background: var(--text-muted); }
     .status-error .status-dot { background: var(--red); }
+
+    /* enhance mode status dot colors */
+    .status-e_analyzing .status-dot { background: var(--accent); animation: pulse 1s infinite; }
+    .status-e_awaiting_research .status-dot { background: var(--yellow); }
+    .status-e_extracting .status-dot { background: var(--accent); animation: pulse 1s infinite; }
+    .status-e_synthesizing .status-dot { background: #a78bfa; animation: pulse 1s infinite; }
+    .status-e_auditing .status-dot { background: #818cf8; animation: pulse 1s infinite; }
+    .status-e_awaiting_decisions .status-dot { background: var(--yellow); }
+    .status-e_planning_batches .status-dot { background: #38bdf8; animation: pulse 1s infinite; }
+    .status-e_awaiting_batch_approval .status-dot { background: var(--yellow); }
+    .status-e_applying .status-dot { background: #a78bfa; animation: pulse 1s infinite; }
+    .status-e_batch_applied .status-dot { background: #818cf8; }
+    .status-e_testing .status-dot { background: #38bdf8; animation: pulse 1s infinite; }
+    .status-e_fixing_tests .status-dot { background: #f472b6; animation: pulse 1s infinite; }
+    .status-e_batch_tested .status-dot { background: #22d3ee; }
+    .status-e_tests_failed .status-dot { background: var(--red); }
+    .status-e_ci_checking .status-dot { background: #2dd4bf; animation: pulse 1s infinite; }
+    .status-e_fixing_ci .status-dot { background: #c084fc; animation: pulse 1s infinite; }
+    .status-e_batch_ci_passed .status-dot { background: #2dd4bf; }
+    .status-e_ci_failed .status-dot { background: var(--red); }
+    .status-e_verifying .status-dot { background: #818cf8; animation: pulse 1s infinite; }
+    .status-e_batch_complete .status-dot { background: #22d3ee; }
+    .status-e_enhance_complete .status-dot { background: var(--green); }
+
+    .mode-badge {
+      font-size: 0.65rem;
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      display: inline-block;
+    }
+    .mode-badge.mode-hardening { background: #6c8cff22; color: var(--accent); }
+    .mode-badge.mode-enhance { background: #22c55e22; color: var(--green); }
 
     .findings { margin-top: 0.8rem; }
 
@@ -549,6 +607,231 @@
 
     .stale-warning { font-size: 0.75rem; color: var(--orange); font-weight: 600; }
 
+    /* ── Enhance interactive panels ──────────────────────────── */
+
+    .enhance-section {
+      margin-top: 0.8rem;
+    }
+
+    .enhance-section-label {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.5rem;
+    }
+
+    .research-topic {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.6rem 0.8rem;
+      margin-bottom: 0.5rem;
+      background: var(--bg);
+    }
+
+    .research-topic-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 0.6rem;
+    }
+
+    .research-topic-prompt {
+      font-size: 0.85rem;
+      flex: 1;
+      line-height: 1.4;
+    }
+
+    .research-topic-status {
+      font-size: 0.7rem;
+      padding: 0.15rem 0.4rem;
+      border-radius: 3px;
+      font-weight: 600;
+      text-transform: uppercase;
+      flex-shrink: 0;
+      white-space: nowrap;
+    }
+    .topic-status-pending { background: #fbbf2422; color: var(--yellow); }
+    .topic-status-researching { background: #6c8cff22; color: var(--accent); }
+    .topic-status-completed { background: #22c55e22; color: var(--green); }
+    .topic-status-rejected { background: #8b90a022; color: var(--text-muted); }
+
+    .research-topic-actions {
+      display: flex;
+      gap: 0.4rem;
+      margin-top: 0.5rem;
+      flex-wrap: wrap;
+      align-items: flex-start;
+    }
+
+    .research-paste-area {
+      width: 100%;
+      margin-top: 0.4rem;
+      padding: 0.5rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 0.8rem;
+      min-height: 80px;
+      resize: vertical;
+      font-family: inherit;
+      line-height: 1.4;
+    }
+
+    .research-topic.completed-topic { opacity: 0.65; }
+    .research-topic.rejected-topic { opacity: 0.4; }
+
+    .enhance-item {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.7rem 0.9rem;
+      margin-bottom: 0.5rem;
+      background: var(--bg);
+    }
+
+    .enhance-item-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 0.6rem;
+    }
+
+    .enhance-item-description {
+      font-size: 0.9rem;
+      flex: 1;
+      line-height: 1.4;
+    }
+
+    .enhance-item-badges {
+      display: flex;
+      gap: 0.3rem;
+      flex-shrink: 0;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .impact-badge, .effort-badge {
+      font-size: 0.65rem;
+      padding: 0.1rem 0.35rem;
+      border-radius: 3px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .impact-high { background: #f8717122; color: var(--red); }
+    .impact-medium { background: #fb923c22; color: var(--orange); }
+    .impact-low { background: #fbbf2422; color: var(--yellow); }
+    .effort-high { background: #f8717122; color: var(--red); }
+    .effort-medium { background: #fb923c22; color: var(--orange); }
+    .effort-low { background: #22c55e22; color: var(--green); }
+
+    .prior-decision-note {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      font-style: italic;
+      margin-top: 0.3rem;
+    }
+
+    .decision-controls {
+      display: flex;
+      gap: 0.3rem;
+      margin-top: 0.5rem;
+    }
+
+    .decision-btn {
+      font-size: 0.75rem;
+      padding: 0.25rem 0.6rem;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .decision-btn.active-todo { background: #22c55e22; border-color: #22c55e; color: var(--green); }
+    .decision-btn.active-defer { background: #fbbf2422; border-color: #fbbf24; color: var(--yellow); }
+    .decision-btn.active-reject { background: #f8717122; border-color: #f87171; color: var(--red); }
+
+    .batch-card {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.8rem 1rem;
+      margin-bottom: 0.6rem;
+      background: var(--bg);
+    }
+
+    .batch-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 0.6rem;
+      margin-bottom: 0.4rem;
+    }
+
+    .batch-card-title {
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
+
+    .batch-card-meta {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-bottom: 0.4rem;
+    }
+
+    .batch-items-list {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-bottom: 0.3rem;
+    }
+
+    .batch-write-targets {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      font-family: monospace;
+    }
+
+    .batch-progress-bar {
+      display: flex;
+      gap: 0.3rem;
+      margin-top: 0.5rem;
+      align-items: center;
+    }
+
+    .batch-phase-step {
+      font-size: 0.7rem;
+      padding: 0.15rem 0.4rem;
+      border-radius: 3px;
+      border: 1px solid var(--border);
+    }
+    .batch-phase-step.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .batch-phase-step.done { background: #22c55e22; border-color: #22c55e; color: var(--green); }
+    .batch-phase-step.pending { color: var(--text-muted); }
+
+    .lock-grant-card {
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 0.5rem 0.7rem;
+      margin-bottom: 0.4rem;
+      font-size: 0.8rem;
+      background: var(--bg);
+    }
+
+    .replan-textarea {
+      width: 100%;
+      margin-top: 0.5rem;
+      padding: 0.5rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 0.8rem;
+      min-height: 60px;
+      resize: vertical;
+      font-family: inherit;
+    }
+
     .test-results { margin-top: 0.8rem; }
     .test-badge { display: inline-block; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; padding: 0.15rem 0.5rem; border-radius: 3px; }
     .test-badge.pass { background: #22c55e22; color: var(--green); }
@@ -784,6 +1067,24 @@
       }
     }
 
+    async function startEnhance(name, evt) {
+      if (evt) evt.stopPropagation();
+      loadingActions[name] = 'enhance';
+      render();
+      try {
+        await apiFetch('/enhance/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ controller: name })
+        });
+        selectedController = name;
+        render();
+      } catch (_) {
+        delete loadingActions[name];
+        render();
+      }
+    }
+
     async function loadExistingAnalysis(name, evt) {
       if (evt) evt.stopPropagation();
       loadingActions[name] = 'load';
@@ -858,6 +1159,7 @@
       statuses.forEach(s => counts[s] = (counts[s] || 0) + 1);
 
       const parts = [];
+      // hardening active statuses
       if (counts.h_analyzing)         parts.push(`<span class="count count-analyzing">${counts.h_analyzing} analyzing</span>`);
       if (counts.h_hardening)         parts.push(`<span class="count count-analyzing">${counts.h_hardening} hardening</span>`);
       if (counts.h_testing)           parts.push(`<span class="count count-analyzing">${counts.h_testing} testing</span>`);
@@ -868,8 +1170,26 @@
       if (counts.h_awaiting_decisions) parts.push(`<span class="count count-awaiting">${counts.h_awaiting_decisions} awaiting decisions</span>`);
       if (counts.h_tests_failed)      parts.push(`<span class="count count-errored">${counts.h_tests_failed} tests failed</span>`);
       if (counts.h_ci_failed)         parts.push(`<span class="count count-errored">${counts.h_ci_failed} CI failed</span>`);
-      if (counts.h_complete)          parts.push(`<span class="count count-complete">${counts.h_complete} complete</span>`);
-      if (counts.error)             parts.push(`<span class="count count-errored">${counts.error} error</span>`);
+      if (counts.h_complete)          parts.push(`<span class="count count-complete">${counts.h_complete} hardened</span>`);
+      // enhance active statuses
+      if (counts.e_analyzing)              parts.push(`<span class="count count-analyzing">${counts.e_analyzing} e:analyzing</span>`);
+      if (counts.e_extracting)             parts.push(`<span class="count count-analyzing">${counts.e_extracting} e:extracting</span>`);
+      if (counts.e_synthesizing)           parts.push(`<span class="count count-analyzing">${counts.e_synthesizing} e:synthesizing</span>`);
+      if (counts.e_auditing)               parts.push(`<span class="count count-analyzing">${counts.e_auditing} e:auditing</span>`);
+      if (counts.e_planning_batches)       parts.push(`<span class="count count-analyzing">${counts.e_planning_batches} e:planning</span>`);
+      if (counts.e_applying)               parts.push(`<span class="count count-analyzing">${counts.e_applying} e:applying</span>`);
+      if (counts.e_testing)                parts.push(`<span class="count count-analyzing">${counts.e_testing} e:testing</span>`);
+      if (counts.e_fixing_tests)           parts.push(`<span class="count count-analyzing">${counts.e_fixing_tests} e:fixing tests</span>`);
+      if (counts.e_ci_checking)            parts.push(`<span class="count count-analyzing">${counts.e_ci_checking} e:CI checking</span>`);
+      if (counts.e_fixing_ci)              parts.push(`<span class="count count-analyzing">${counts.e_fixing_ci} e:fixing CI</span>`);
+      if (counts.e_verifying)              parts.push(`<span class="count count-analyzing">${counts.e_verifying} e:verifying</span>`);
+      if (counts.e_awaiting_research)      parts.push(`<span class="count count-awaiting">${counts.e_awaiting_research} e:awaiting research</span>`);
+      if (counts.e_awaiting_decisions)     parts.push(`<span class="count count-awaiting">${counts.e_awaiting_decisions} e:awaiting decisions</span>`);
+      if (counts.e_awaiting_batch_approval) parts.push(`<span class="count count-awaiting">${counts.e_awaiting_batch_approval} e:awaiting batch approval</span>`);
+      if (counts.e_tests_failed)           parts.push(`<span class="count count-errored">${counts.e_tests_failed} e:tests failed</span>`);
+      if (counts.e_ci_failed)              parts.push(`<span class="count count-errored">${counts.e_ci_failed} e:CI failed</span>`);
+      if (counts.e_enhance_complete)       parts.push(`<span class="count count-complete">${counts.e_enhance_complete} enhanced</span>`);
+      if (counts.error)                    parts.push(`<span class="count count-errored">${counts.error} error</span>`);
 
       return parts.length ? `<div class="header-summary">${parts.join('')}</div>` : '';
     }
@@ -907,14 +1227,34 @@
 
       // Determine action buttons
       let actions = '';
-      const isActive = workflow && ['h_analyzing', 'h_hardening', 'h_testing', 'h_fixing_tests', 'h_ci_checking', 'h_fixing_ci', 'h_verifying'].includes(workflow.status);
+      const enhanceActiveStatuses = [
+        'e_analyzing', 'e_extracting', 'e_synthesizing', 'e_auditing',
+        'e_planning_batches', 'e_applying', 'e_testing', 'e_fixing_tests',
+        'e_ci_checking', 'e_fixing_ci', 'e_verifying'
+      ];
+      const hardenActiveStatuses = ['h_analyzing', 'h_hardening', 'h_testing', 'h_fixing_tests', 'h_ci_checking', 'h_fixing_ci', 'h_verifying'];
+      const isActive = workflow && (hardenActiveStatuses.includes(workflow.status) || enhanceActiveStatuses.includes(workflow.status));
       const loading = loadingActions[c.name];
 
       if (loading) {
-        const label = { analyze: 'Analyzing...', load: 'Loading...', retry: 'Retrying...' }[loading] || 'Working...';
+        const label = { analyze: 'Analyzing...', load: 'Loading...', retry: 'Retrying...', enhance: 'Starting...' }[loading] || 'Working...';
         actions = `<button class="primary" disabled>${label}</button>`;
       } else if (!isActive) {
-        if (c.existing_analysis_at) {
+        if (workflowStatus === 'h_complete' || workflowStatus === 'e_enhance_complete') {
+          // show Start Enhance (or Re-Enhance) alongside the hardening buttons
+          const enhanceLabel = workflowStatus === 'e_enhance_complete' ? 'Re-Enhance' : 'Start Enhance';
+          if (c.existing_analysis_at) {
+            actions = `
+              <button onclick="startEnhance('${escapeAttr(c.name)}', event)">${enhanceLabel}</button>
+              <button class="primary" onclick="loadExistingAnalysis('${escapeAttr(c.name)}', event)">Use Existing</button>
+              <button onclick="analyzeController('${escapeAttr(c.name)}', event)">Re-analyze</button>
+            `;
+          } else {
+            actions = `
+              <button onclick="startEnhance('${escapeAttr(c.name)}', event)">${enhanceLabel}</button>
+            `;
+          }
+        } else if (c.existing_analysis_at) {
           actions = `
             <button class="primary" onclick="loadExistingAnalysis('${escapeAttr(c.name)}', event)">Use Existing</button>
             <button onclick="analyzeController('${escapeAttr(c.name)}', event)">Re-analyze</button>
@@ -924,12 +1264,19 @@
         }
       }
 
+      // Mode indicator for workflows that have started
+      const mode = workflow?.mode;
+      const modeBadge = mode === 'enhance'
+        ? `<span class="mode-badge mode-enhance">enhance</span>`
+        : (mode === 'hardening' ? '' : '');
+
       return `
         <div class="sidebar-item ${isSelected ? 'selected' : ''}" onclick="selectController('${escapeAttr(c.name)}')">
           <div class="sidebar-item-header">
             <span style="display:flex;align-items:center;gap:0.4rem;">
               <span class="workflow-dot ${workflowStatus}"></span>
               ${riskBadge}
+              ${modeBadge}
               <span class="sidebar-item-name">${displayName}</span>
             </span>
             ${renderFindingCounts(c.finding_counts)}
@@ -965,9 +1312,562 @@
       return renderWorkflowDetail(workflow);
     }
 
+    // ── Enhance interactive panel actions ─────────────────────
+
+    async function enhanceApiResearch(name, topicIndex) {
+      loadingActions[`${name}_research_${topicIndex}`] = true;
+      render();
+      try {
+        await apiFetch('/enhance/research/api', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ controller: name, topic_index: topicIndex })
+        });
+      } catch (_) {
+        // error shown via toast
+      } finally {
+        delete loadingActions[`${name}_research_${topicIndex}`];
+        render();
+      }
+    }
+
+    async function enhancePasteResearch(name, topicIndex) {
+      const el = document.getElementById(`research-paste-${name}-${topicIndex}`);
+      if (!el) return;
+      const result = el.value.trim();
+      if (!result) { showToast('Paste research result first'); return; }
+
+      loadingActions[`${name}_research_${topicIndex}`] = true;
+      render();
+      try {
+        await apiFetch('/enhance/research', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ controller: name, topic_index: topicIndex, action: 'paste', result })
+        });
+      } catch (_) {
+        // error shown via toast
+      } finally {
+        delete loadingActions[`${name}_research_${topicIndex}`];
+        render();
+      }
+    }
+
+    async function enhanceRejectTopic(name, topicIndex) {
+      loadingActions[`${name}_research_${topicIndex}`] = true;
+      render();
+      try {
+        await apiFetch('/enhance/research', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ controller: name, topic_index: topicIndex, action: 'reject' })
+        });
+      } catch (_) {
+        // error shown via toast
+      } finally {
+        delete loadingActions[`${name}_research_${topicIndex}`];
+        render();
+      }
+    }
+
+    function setEnhanceItemDecision(name, itemId, decision) {
+      const cs = getCtrlState(name);
+      if (!cs.enhanceDecisions) cs.enhanceDecisions = {};
+      cs.enhanceDecisions[itemId] = decision;
+      render();
+    }
+
+    function getEnhanceItemDecision(name, itemId, defaultDecision) {
+      const cs = getCtrlState(name);
+      if (cs.enhanceDecisions && cs.enhanceDecisions[itemId] !== undefined) {
+        return cs.enhanceDecisions[itemId];
+      }
+      return defaultDecision;
+    }
+
+    async function submitEnhanceDecisions(name) {
+      const workflow = pipeline.workflows[name];
+      if (!workflow || workflow.status !== 'e_awaiting_decisions') return;
+
+      const items = workflow.ready_items || [];
+      const decisions = {};
+      items.forEach(item => {
+        const def = item.suggested_default || 'TODO';
+        decisions[item.id] = getEnhanceItemDecision(name, item.id, def);
+      });
+
+      loadingActions[name] = 'e_submit_decisions';
+      render();
+      try {
+        await apiFetch('/enhance/decisions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ controller: name, decisions })
+        });
+      } catch (_) {
+        // error shown via toast
+      } finally {
+        delete loadingActions[name];
+        render();
+      }
+    }
+
+    async function enhanceApproveBatches(name) {
+      loadingActions[name] = 'e_approve_batches';
+      render();
+      try {
+        await apiFetch('/enhance/batches/approve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ controller: name })
+        });
+      } catch (_) {
+        // error shown via toast
+      } finally {
+        delete loadingActions[name];
+        render();
+      }
+    }
+
+    async function enhanceReplanBatches(name) {
+      const el = document.getElementById(`replan-notes-${name}`);
+      const notes = el ? el.value.trim() : '';
+
+      loadingActions[name] = 'e_replan_batches';
+      render();
+      try {
+        await apiFetch('/enhance/batches/replan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ controller: name, notes })
+        });
+        if (el) el.value = '';
+      } catch (_) {
+        // error shown via toast
+      } finally {
+        delete loadingActions[name];
+        render();
+      }
+    }
+
+    async function enhanceRetryTests(name) {
+      loadingActions[name] = 'e_retry_tests';
+      render();
+      try {
+        await apiFetch('/enhance/retry-tests', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ controller: name })
+        });
+      } catch (_) {
+        delete loadingActions[name];
+        render();
+      }
+    }
+
+    async function enhanceRetryCi(name) {
+      loadingActions[name] = 'e_retry_ci';
+      render();
+      try {
+        await apiFetch('/enhance/retry-ci', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ controller: name })
+        });
+      } catch (_) {
+        delete loadingActions[name];
+        render();
+      }
+    }
+
+    // ── Enhance panel renderers ────────────────────────────────
+
+    function renderResearchPanel(workflow) {
+      const name = workflow.name;
+      const topics = workflow.research_topics || [];
+      const completed = topics.filter(t => t.status === 'completed').length;
+      const rejected = topics.filter(t => t.status === 'rejected').length;
+      const activeCount = topics.filter(t => t.status !== 'rejected').length;
+      const allDone = activeCount > 0 && topics.filter(t => t.status !== 'rejected').every(t => t.status === 'completed');
+
+      return `
+        <div class="enhance-section">
+          <div class="enhance-section-label">Research Topics — ${completed} of ${activeCount} completed${rejected > 0 ? ` · ${rejected} rejected` : ''}</div>
+          ${allDone ? '<div style="font-size:0.8rem;color:var(--green);margin-bottom:0.5rem;">All topics completed — processing will begin automatically.</div>' : ''}
+          ${topics.map((t, i) => {
+            const isLoading = !!loadingActions[`${name}_research_${i}`];
+            const isTerminal = t.status === 'completed' || t.status === 'rejected';
+            const topicClass = t.status === 'completed' ? 'completed-topic' : (t.status === 'rejected' ? 'rejected-topic' : '');
+            const statusClass = `topic-status-${t.status}`;
+            const statusLabel = t.status === 'researching' ? 'in progress' : t.status;
+
+            return `
+              <div class="research-topic ${topicClass}">
+                <div class="research-topic-header">
+                  <div class="research-topic-prompt">${escapeHtml(t.prompt)}</div>
+                  <span class="research-topic-status ${statusClass}">${statusLabel}</span>
+                </div>
+                ${!isTerminal ? `
+                  <div class="research-topic-actions">
+                    <button class="small primary"
+                      onclick="enhanceApiResearch('${escapeAttr(name)}', ${i})"
+                      ${isLoading || t.status === 'researching' ? 'disabled' : ''}>
+                      ${t.status === 'researching' ? 'Researching...' : (isLoading ? 'Starting...' : 'Use API')}
+                    </button>
+                    <button class="small"
+                      onclick="enhanceRejectTopic('${escapeAttr(name)}', ${i})"
+                      ${isLoading || t.status === 'researching' ? 'disabled' : ''}>
+                      Reject
+                    </button>
+                  </div>
+                  <textarea
+                    class="research-paste-area"
+                    id="research-paste-${escapeAttr(name)}-${i}"
+                    placeholder="Or paste research result here..."></textarea>
+                  <div style="margin-top:0.3rem;">
+                    <button class="small"
+                      onclick="enhancePasteResearch('${escapeAttr(name)}', ${i})"
+                      ${isLoading ? 'disabled' : ''}>
+                      Submit Paste
+                    </button>
+                  </div>
+                ` : ''}
+                ${t.status === 'completed' && t.result ? `
+                  <div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.3rem;max-height:60px;overflow:hidden;text-overflow:ellipsis;">
+                    ${escapeHtml((t.result || '').slice(0, 200))}${(t.result || '').length > 200 ? '...' : ''}
+                  </div>
+                ` : ''}
+              </div>
+            `;
+          }).join('')}
+        </div>
+      `;
+    }
+
+    function renderItemDecisionPanel(workflow) {
+      const name = workflow.name;
+      const items = workflow.ready_items || [];
+      const loading = loadingActions[name];
+
+      // Sort: new (no prior decision) first → deferred → rejected
+      const sorted = [...items].sort((a, b) => {
+        const order = { new: 0, deferred: 1, rejected: 2 };
+        const ao = order[a.prior_decision_type || 'new'] ?? 0;
+        const bo = order[b.prior_decision_type || 'new'] ?? 0;
+        return ao - bo;
+      });
+
+      const decisionCounts = { TODO: 0, DEFER: 0, REJECT: 0 };
+      sorted.forEach(item => {
+        const def = item.suggested_default || 'TODO';
+        const d = getEnhanceItemDecision(name, item.id, def);
+        decisionCounts[d] = (decisionCounts[d] || 0) + 1;
+      });
+
+      return `
+        <div class="enhance-section">
+          <div class="enhance-section-label">Item Decisions (${items.length} items)</div>
+          ${sorted.map(item => {
+            const def = item.suggested_default || 'TODO';
+            const decision = getEnhanceItemDecision(name, item.id, def);
+            const impact = (item.impact || '').toLowerCase();
+            const effort = (item.effort || '').toLowerCase();
+            return `
+              <div class="enhance-item">
+                <div class="enhance-item-header">
+                  <div class="enhance-item-description">${escapeHtml(item.description || item.title || '')}</div>
+                  <div class="enhance-item-badges">
+                    ${impact ? `<span class="impact-badge impact-${impact}" title="Impact">i:${impact}</span>` : ''}
+                    ${effort ? `<span class="effort-badge effort-${effort}" title="Effort">e:${effort}</span>` : ''}
+                  </div>
+                </div>
+                ${item.prior_decision_context ? `<div class="prior-decision-note">${escapeHtml(item.prior_decision_context)}</div>` : ''}
+                ${item.rationale ? `<div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.2rem;">${escapeHtml(item.rationale)}</div>` : ''}
+                <div class="decision-controls">
+                  <button class="decision-btn ${decision === 'TODO' ? 'active-todo' : ''}"
+                    onclick="setEnhanceItemDecision('${escapeAttr(name)}', '${escapeAttr(item.id)}', 'TODO')">
+                    TODO
+                  </button>
+                  <button class="decision-btn ${decision === 'DEFER' ? 'active-defer' : ''}"
+                    onclick="setEnhanceItemDecision('${escapeAttr(name)}', '${escapeAttr(item.id)}', 'DEFER')">
+                    DEFER
+                  </button>
+                  <button class="decision-btn ${decision === 'REJECT' ? 'active-reject' : ''}"
+                    onclick="setEnhanceItemDecision('${escapeAttr(name)}', '${escapeAttr(item.id)}', 'REJECT')">
+                    REJECT
+                  </button>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+        <div class="submit-bar">
+          <span class="decision-summary">
+            ${decisionCounts.TODO} TODO · ${decisionCounts.DEFER} DEFER · ${decisionCounts.REJECT} REJECT
+          </span>
+          <button class="primary"
+            onclick="submitEnhanceDecisions('${escapeAttr(name)}')"
+            ${loading === 'e_submit_decisions' || decisionCounts.TODO === 0 ? 'disabled' : ''}>
+            ${loading === 'e_submit_decisions' ? 'Submitting...' : `Plan Batches (${decisionCounts.TODO} items)`}
+          </button>
+        </div>
+      `;
+    }
+
+    function renderBatchPlanPanel(workflow) {
+      const name = workflow.name;
+      const batches = workflow.batches || [];
+      const loading = loadingActions[name];
+
+      return `
+        <div class="enhance-section">
+          <div class="enhance-section-label">Batch Plan (${batches.length} batches)</div>
+          ${batches.map((b, i) => {
+            const items = b.items || [];
+            const writeTargets = b.write_targets || [];
+            const effort = b.estimated_effort ? ` · effort: ${b.estimated_effort}` : '';
+            return `
+              <div class="batch-card">
+                <div class="batch-card-header">
+                  <div class="batch-card-title">Batch ${i + 1}${b.id ? ` (${escapeHtml(b.id)})` : ''}</div>
+                  ${b.estimated_effort ? `<span class="effort-badge effort-${b.estimated_effort.toLowerCase()}">${b.estimated_effort}</span>` : ''}
+                </div>
+                ${b.description ? `<div class="batch-card-meta">${escapeHtml(b.description)}</div>` : ''}
+                ${items.length > 0 ? `
+                  <div class="batch-items-list">
+                    Items: ${items.map(item => escapeHtml(typeof item === 'string' ? item : (item.title || item.description || item.id || ''))).join(', ')}
+                  </div>
+                ` : ''}
+                ${writeTargets.length > 0 ? `
+                  <div class="batch-write-targets">
+                    Writes: ${writeTargets.map(p => escapeHtml(p)).join(', ')}
+                  </div>
+                ` : ''}
+              </div>
+            `;
+          }).join('')}
+        </div>
+        <div style="margin-top:0.8rem;">
+          <button class="approve"
+            onclick="enhanceApproveBatches('${escapeAttr(name)}')"
+            ${loading === 'e_approve_batches' ? 'disabled' : ''}>
+            ${loading === 'e_approve_batches' ? 'Starting...' : 'Approve & Start Execution'}
+          </button>
+        </div>
+        <div style="margin-top:0.6rem;">
+          <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.3rem;">Reject and re-plan with notes:</div>
+          <textarea
+            class="replan-textarea"
+            id="replan-notes-${escapeAttr(name)}"
+            placeholder="Optional notes for re-planning (e.g. keep batches smaller, group by file)..."></textarea>
+          <div style="margin-top:0.3rem;">
+            <button
+              onclick="enhanceReplanBatches('${escapeAttr(name)}')"
+              ${loading === 'e_replan_batches' ? 'disabled' : ''}>
+              ${loading === 'e_replan_batches' ? 'Re-planning...' : 'Reject & Re-plan'}
+            </button>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderBatchProgressPanel(workflow) {
+      const name = workflow.name;
+      const status = workflow.status;
+      const batches = workflow.batches || [];
+      const currentBatchId = workflow.current_batch_id;
+      const loading = loadingActions[name];
+
+      const batchPhases = [
+        { key: 'e_applying', label: 'Apply' },
+        { key: 'e_testing', label: 'Test' },
+        { key: 'e_fixing_tests', label: 'Fix Tests' },
+        { key: 'e_ci_checking', label: 'CI' },
+        { key: 'e_fixing_ci', label: 'Fix CI' },
+        { key: 'e_verifying', label: 'Verify' },
+      ];
+      const donePhaseKeys = ['e_batch_applied', 'e_batch_tested', 'e_batch_ci_passed', 'e_batch_complete'];
+      const applyingPhaseKeys = ['e_applying', 'e_batch_applied', 'e_testing', 'e_fixing_tests', 'e_batch_tested',
+        'e_ci_checking', 'e_fixing_ci', 'e_batch_ci_passed', 'e_verifying', 'e_batch_complete',
+        'e_tests_failed', 'e_ci_failed'];
+
+      return `
+        <div class="enhance-section">
+          <div class="enhance-section-label">Batch Execution</div>
+          ${batches.map(b => {
+            const isCurrent = b.id === currentBatchId;
+            const isActive = isCurrent && applyingPhaseKeys.includes(status);
+            const isDone = b.status === 'complete' || b.status === 'e_batch_complete';
+            const hasFailed = isCurrent && (status === 'e_tests_failed' || status === 'e_ci_failed');
+
+            return `
+              <div class="batch-card" style="${isCurrent ? 'border-color:var(--accent)' : ''}">
+                <div class="batch-card-header">
+                  <div class="batch-card-title">
+                    Batch ${escapeHtml(b.id || '')}
+                    ${isDone ? '<span style="color:var(--green);font-size:0.75rem;margin-left:0.4rem;">complete</span>' : ''}
+                    ${hasFailed ? '<span style="color:var(--red);font-size:0.75rem;margin-left:0.4rem;">failed</span>' : ''}
+                  </div>
+                  ${isCurrent && isActive && !hasFailed ? `<span style="font-size:0.7rem;color:var(--accent);">active</span>` : ''}
+                </div>
+                ${b.description ? `<div class="batch-card-meta">${escapeHtml(b.description)}</div>` : ''}
+                ${isActive ? `
+                  <div class="batch-progress-bar">
+                    ${batchPhases.map(phase => {
+                      const phaseOrder = ['e_applying', 'e_testing', 'e_fixing_tests', 'e_ci_checking', 'e_fixing_ci', 'e_verifying'];
+                      const currentIdx = phaseOrder.indexOf(status);
+                      const phaseIdx = phaseOrder.indexOf(phase.key);
+                      let cls = 'pending';
+                      if (status === phase.key) cls = 'active';
+                      else if (currentIdx > phaseIdx) cls = 'done';
+                      // Also mark test/fix as done if we're past them
+                      if ((phase.key === 'e_testing' || phase.key === 'e_fixing_tests') &&
+                          ['e_ci_checking', 'e_fixing_ci', 'e_verifying'].includes(status)) cls = 'done';
+                      return `<span class="batch-phase-step ${cls}">${phase.label}</span>`;
+                    }).join('')}
+                  </div>
+                ` : ''}
+              </div>
+            `;
+          }).join('')}
+        </div>
+        ${status === 'e_tests_failed' ? `
+          <div style="margin-top:0.5rem;">
+            <button class="primary"
+              onclick="enhanceRetryTests('${escapeAttr(name)}')"
+              ${loading === 'e_retry_tests' ? 'disabled' : ''}>
+              ${loading === 'e_retry_tests' ? 'Retrying...' : 'Retry Batch (from Apply)'}
+            </button>
+          </div>
+        ` : ''}
+        ${status === 'e_ci_failed' ? `
+          <div style="margin-top:0.5rem;">
+            <button class="primary"
+              onclick="enhanceRetryCi('${escapeAttr(name)}')"
+              ${loading === 'e_retry_ci' ? 'disabled' : ''}>
+              ${loading === 'e_retry_ci' ? 'Retrying...' : 'Retry Batch (from Apply)'}
+            </button>
+          </div>
+        ` : ''}
+      `;
+    }
+
+    function renderLockStatePanel(locksData) {
+      if (!locksData) return '';
+      const grants = locksData.active_grants || [];
+      const queueDepth = locksData.queue_depth || 0;
+      if (grants.length === 0 && queueDepth === 0) return '';
+
+      return `
+        <div class="enhance-section">
+          <div class="enhance-section-label">Lock State</div>
+          ${queueDepth > 0 ? `<div style="font-size:0.8rem;color:var(--yellow);margin-bottom:0.4rem;">${queueDepth} item${queueDepth !== 1 ? 's' : ''} waiting for locks</div>` : ''}
+          ${grants.map(g => `
+            <div class="lock-grant-card">
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span style="font-weight:600;">${escapeHtml(g.holder || '')}</span>
+                <span style="color:var(--text-muted);">${g.write_paths ? g.write_paths.length : 0} file${(g.write_paths || []).length !== 1 ? 's' : ''} locked</span>
+              </div>
+              ${g.write_paths && g.write_paths.length > 0 ? `
+                <div style="font-family:monospace;font-size:0.7rem;color:var(--text-muted);margin-top:0.2rem;">
+                  ${g.write_paths.map(p => escapeHtml(p)).join('<br>')}
+                </div>
+              ` : ''}
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    function renderEnhancePhaseInfo(workflow) {
+      const status = workflow.status;
+      const name = workflow.name;
+      const parts = [];
+
+      // Analysis summary (always shown when available)
+      if (workflow.e_analysis) {
+        const a = workflow.e_analysis;
+        if (a.summary) {
+          parts.push(`
+            <div style="margin-top:0.5rem;font-size:0.8rem;color:var(--text-muted);">
+              Analysis: ${escapeHtml(a.summary)}
+            </div>
+          `);
+        }
+      }
+
+      // ── E1: Research panel ──────────────────────────────────
+      if (status === 'e_awaiting_research') {
+        parts.push(renderResearchPanel(workflow));
+      }
+
+      // ── E2-E4: Extraction chain in progress ─────────────────
+      if (['e_extracting', 'e_synthesizing', 'e_auditing'].includes(status)) {
+        parts.push(`
+          <div class="enhance-section">
+            <div style="font-size:0.8rem;color:var(--text-muted);">
+              ${status === 'e_extracting' ? 'Extracting possible items from research...'
+                : status === 'e_synthesizing' ? 'Synthesizing items with impact/effort ratings...'
+                : 'Auditing items against prior decisions...'}
+            </div>
+          </div>
+        `);
+      }
+
+      // ── E5: Item decision panel ─────────────────────────────
+      if (status === 'e_awaiting_decisions') {
+        parts.push(renderItemDecisionPanel(workflow));
+      }
+
+      // ── E6: Batch plan review panel ─────────────────────────
+      if (status === 'e_awaiting_batch_approval' || status === 'e_planning_batches') {
+        if (status === 'e_planning_batches') {
+          parts.push(`
+            <div class="enhance-section">
+              <div style="font-size:0.8rem;color:var(--text-muted);">Planning execution batches...</div>
+            </div>
+          `);
+        } else {
+          parts.push(renderBatchPlanPanel(workflow));
+        }
+      }
+
+      // ── E7-E10: Batch execution progress ────────────────────
+      const batchExecStatuses = [
+        'e_applying', 'e_batch_applied', 'e_testing', 'e_fixing_tests', 'e_batch_tested',
+        'e_ci_checking', 'e_fixing_ci', 'e_batch_ci_passed', 'e_verifying', 'e_batch_complete',
+        'e_tests_failed', 'e_ci_failed'
+      ];
+      if (batchExecStatuses.includes(status)) {
+        parts.push(renderBatchProgressPanel(workflow));
+      }
+
+      // ── Research topics summary (shown in non-research phases for context) ──
+      const topics = workflow.research_topics || [];
+      if (topics.length > 0 && status !== 'e_awaiting_research') {
+        const completed = topics.filter(t => t.status === 'completed').length;
+        const rejected = topics.filter(t => t.status === 'rejected').length;
+        const active = topics.filter(t => t.status !== 'rejected').length;
+        parts.push(`
+          <div style="margin-top:0.5rem;font-size:0.75rem;color:var(--text-muted);">
+            Research: ${completed}/${active} topics completed${rejected > 0 ? ` · ${rejected} rejected` : ''}
+          </div>
+        `);
+      }
+
+      // ── Lock state (shown when locks are active) ─────────────
+      const locksData = pipeline.locks;
+      if (locksData && ((locksData.active_grants || []).length > 0 || (locksData.queue_depth || 0) > 0)) {
+        parts.push(renderLockStatePanel(locksData));
+      }
+
+      return parts.join('');
+    }
+
     function renderWorkflowDetail(workflow) {
       const name = workflow.name;
       const cs = getCtrlState(name);
+      const isEnhanceMode = workflow.mode === 'enhance';
       const isDecisionPhase = workflow.status === 'h_awaiting_decisions';
       const allFindings = workflow.analysis?.findings || [];
       const blockers = allFindings.filter(f => isBlocker(f));
@@ -982,10 +1882,15 @@
       if (workflow.prompts?.h_fix_ci)    promptButtons.push(`<button class="small" onclick="copyPrompt('${escapeAttr(name)}', 'h_fix_ci')">Copy Fix CI Prompt</button>`);
       if (workflow.prompts?.h_verify)    promptButtons.push(`<button class="small" onclick="copyPrompt('${escapeAttr(name)}', 'h_verify')">Copy Verify Prompt</button>`);
 
+      // Mode indicator badge for header
+      const modeLabel = isEnhanceMode
+        ? `<span class="mode-badge mode-enhance" style="margin-left:0.5rem;">enhance</span>`
+        : '';
+
       let html = `
         <div class="detail-header">
           <div>
-            <div class="detail-title">${name.replace(/_controller$/, '')}</div>
+            <div class="detail-title">${name.replace(/_controller$/, '')}${modeLabel}</div>
             <div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.3rem;">${workflow.path}</div>
           </div>
           <div class="detail-actions">
@@ -1008,7 +1913,9 @@
 
           ${workflow.error ? `<div class="error-text">${escapeHtml(workflow.error)} <button onclick="retryAnalysis('${escapeAttr(name)}')" ${loadingActions[name] === 'retry' ? 'disabled' : ''}>${loadingActions[name] === 'retry' ? 'Retrying...' : 'Retry'}</button></div>` : ''}
 
-          ${blockers.length ? `
+          ${isEnhanceMode ? renderEnhancePhaseInfo(workflow) : ''}
+
+          ${!isEnhanceMode && blockers.length ? `
             <div style="margin-top: 0.8rem;">
               <div style="font-size: 0.8rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem;">Out-of-scope blockers</div>
               <div style="display: flex; flex-direction: column; gap: 0.5rem;">
@@ -1017,15 +1924,15 @@
             </div>
           ` : ''}
 
-          ${controllerFindings.length ? `
+          ${!isEnhanceMode && controllerFindings.length ? `
             <div class="findings">
               ${controllerFindings.map(f => renderFinding(name, f, isDecisionPhase)).join('')}
             </div>
           ` : ''}
 
-          ${workflow.analysis?.notes ? `<div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;">${escapeHtml(workflow.analysis.notes)}</div>` : ''}
+          ${!isEnhanceMode && workflow.analysis?.notes ? `<div style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.5rem;">${escapeHtml(workflow.analysis.notes)}</div>` : ''}
 
-          ${['h_awaiting_decisions', 'h_hardened', 'h_tested', 'h_tests_failed', 'h_ci_passed', 'h_ci_failed', 'h_complete'].includes(workflow.status) ? `
+          ${['h_awaiting_decisions', 'h_hardened', 'h_tested', 'h_tests_failed', 'h_ci_passed', 'h_ci_failed', 'h_complete', 'e_enhance_complete'].includes(workflow.status) ? `
             <div class="ask-section">
               <input type="text" id="ask-input" placeholder="Ask a question about this controller..."
                 onkeydown="if(event.key==='Enter') askQuestion('${escapeAttr(name)}')" />
@@ -1034,25 +1941,25 @@
             ${renderQueries(name)}
           ` : ''}
 
-          ${workflow.test_results ? renderTestResults(name, workflow.test_results) : ''}
+          ${!isEnhanceMode && workflow.test_results ? renderTestResults(name, workflow.test_results) : ''}
 
-          ${workflow.status === 'h_tests_failed' ? `
+          ${!isEnhanceMode && workflow.status === 'h_tests_failed' ? `
             <div style="margin-top: 0.5rem;">
               <button class="primary" onclick="retryTests('${escapeAttr(name)}')" ${loadingActions[name] === 'retry_tests' ? 'disabled' : ''}>${loadingActions[name] === 'retry_tests' ? 'Retrying...' : 'Retry Tests'}</button>
             </div>
           ` : ''}
 
-          ${workflow.ci_results ? renderCIResults(name, workflow.ci_results) : ''}
+          ${!isEnhanceMode && workflow.ci_results ? renderCIResults(name, workflow.ci_results) : ''}
 
-          ${workflow.status === 'h_ci_failed' ? `
+          ${!isEnhanceMode && workflow.status === 'h_ci_failed' ? `
             <div style="margin-top: 0.5rem;">
               <button class="primary" onclick="retryCi('${escapeAttr(name)}')" ${loadingActions[name] === 'retry_ci' ? 'disabled' : ''}>${loadingActions[name] === 'retry_ci' ? 'Retrying...' : 'Retry CI'}</button>
             </div>
           ` : ''}
 
-          ${verification ? renderVerification(name, verification, workflow) : ''}
+          ${!isEnhanceMode && verification ? renderVerification(name, verification, workflow) : ''}
 
-          ${workflow.hardened?.warnings?.length ? `
+          ${!isEnhanceMode && workflow.hardened?.warnings?.length ? `
             <div style="margin-top: 0.5rem;">
               ${workflow.hardened.warnings.map(w => `<div style="font-size: 0.8rem; color: var(--orange);">${escapeHtml(w)}</div>`).join('')}
             </div>
@@ -1384,6 +2291,7 @@
 
     function displayStatus(status) {
       const labels = {
+        // hardening statuses
         'h_awaiting_decisions': 'awaiting decisions',
         'h_fixing_tests': 'fixing tests',
         'h_tests_failed': 'tests failed',
@@ -1391,6 +2299,29 @@
         'h_fixing_ci': 'fixing CI',
         'h_ci_passed': 'CI passed',
         'h_ci_failed': 'CI failed',
+        'h_complete': 'hardening complete',
+        // enhance statuses
+        'e_analyzing': 'enhance: analyzing',
+        'e_awaiting_research': 'enhance: awaiting research',
+        'e_extracting': 'enhance: extracting items',
+        'e_synthesizing': 'enhance: synthesizing',
+        'e_auditing': 'enhance: auditing',
+        'e_awaiting_decisions': 'enhance: awaiting decisions',
+        'e_planning_batches': 'enhance: planning batches',
+        'e_awaiting_batch_approval': 'enhance: awaiting batch approval',
+        'e_applying': 'enhance: applying',
+        'e_batch_applied': 'enhance: batch applied',
+        'e_testing': 'enhance: testing',
+        'e_fixing_tests': 'enhance: fixing tests',
+        'e_batch_tested': 'enhance: batch tested',
+        'e_tests_failed': 'enhance: tests failed',
+        'e_ci_checking': 'enhance: CI checking',
+        'e_fixing_ci': 'enhance: fixing CI',
+        'e_batch_ci_passed': 'enhance: batch CI passed',
+        'e_ci_failed': 'enhance: CI failed',
+        'e_verifying': 'enhance: verifying',
+        'e_batch_complete': 'enhance: batch complete',
+        'e_enhance_complete': 'enhance complete',
       };
       if (labels[status]) return labels[status];
       // Strip mode prefix (h_, e_) and humanize underscores

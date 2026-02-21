@@ -54,6 +54,32 @@ class Pipeline
           end
         end
 
+        # ── Enhance sidecar scanning ──────────────────────────────
+        enhance_analysis_file  = enhance_sidecar_path(path, "analysis.json")
+        enhance_decisions_file = enhance_sidecar_path(path, "decisions.json")
+        enhance_batches_file   = enhance_sidecar_path(path, "batches.json")
+        enhance_research_status_file = enhance_sidecar_path(path, "research_status.json")
+
+        has_enhance_analysis  = File.exist?(enhance_analysis_file)
+        has_enhance_decisions = File.exist?(enhance_decisions_file)
+        has_enhance_batches   = File.exist?(enhance_batches_file)
+
+        # Load deferred/rejected items for audit phase (future cycles)
+        deferred_path = enhance_sidecar_path(path, File.join("decisions", "deferred.json"))
+        rejected_path = enhance_sidecar_path(path, File.join("decisions", "rejected.json"))
+        deferred_items = File.exist?(deferred_path) ? (JSON.parse(File.read(deferred_path)) rescue []) : []
+        rejected_items = File.exist?(rejected_path) ? (JSON.parse(File.read(rejected_path)) rescue []) : []
+
+        # Determine enhance resume status from sidecar presence
+        enhance_resume_status = determine_enhance_resume_status(
+          path:                        path,
+          has_enhance_analysis:        has_enhance_analysis,
+          has_enhance_decisions:       has_enhance_decisions,
+          has_enhance_batches:         has_enhance_batches,
+          enhance_research_status_file: enhance_research_status_file,
+          enhance_batches_file:        enhance_batches_file
+        )
+
         discovered << {
           name: basename,
           path: relative,
@@ -66,7 +92,12 @@ class Pipeline
           existing_verified_at: has_verified ? File.mtime(verified_file).iso8601 : nil,
           stale: has_analysis ? controller_mtime > File.mtime(analysis_file) : nil,
           overall_risk: overall_risk,
-          finding_counts: finding_counts
+          finding_counts: finding_counts,
+          enhance_sidecar: has_enhance_analysis || has_enhance_decisions || has_enhance_batches,
+          enhance_analysis_at: has_enhance_analysis ? File.mtime(enhance_analysis_file).iso8601 : nil,
+          enhance_resume_status: enhance_resume_status,
+          deferred_items: deferred_items,
+          rejected_items: rejected_items
         }
       end
 
@@ -90,6 +121,91 @@ class Pipeline
         @state[:phase] = "ready"
       end
     end
+
+    private
+
+    # Determine the enhance resume status from the presence and contents of
+    # enhance sidecar files. Check in order from most-complete to least-complete.
+    #
+    # Returns a status string (e.g. "e_enhance_complete", "e_awaiting_research")
+    # or nil if no enhance sidecar is present.
+    #
+    def determine_enhance_resume_status(path:,
+                                        has_enhance_analysis:,
+                                        has_enhance_decisions:,
+                                        has_enhance_batches:,
+                                        enhance_research_status_file:,
+                                        enhance_batches_file:)
+      return nil unless has_enhance_analysis
+
+      # Check for batch-level completion
+      if has_enhance_batches
+        batches_data = begin
+          JSON.parse(File.read(enhance_batches_file))
+        rescue JSON::ParserError
+          nil
+        end
+        batches = batches_data&.[]("batches") || []
+
+        unless batches.empty?
+          # (1) All batches have verification.json → e_enhance_complete
+          all_verified = batches.all? do |batch|
+            batch_id = batch["id"]
+            batch_verify_file = enhance_sidecar_path(path, File.join("batches", batch_id, "verification.json"))
+            File.exist?(batch_verify_file)
+          end
+          return "e_enhance_complete" if all_verified
+
+          # Check whether any batch has started executing (has a sidecar directory)
+          any_batch_started = batches.any? do |batch|
+            batch_id = batch["id"]
+            batch_sidecar_dir = File.dirname(enhance_sidecar_path(path, File.join("batches", batch_id, "apply.json")))
+            Dir.exist?(batch_sidecar_dir)
+          end
+
+          # (2) Partial batch progress — find the batch in progress and resume there
+          if any_batch_started
+            batches.each do |batch|
+              batch_id = batch["id"]
+              verify_file = enhance_sidecar_path(path, File.join("batches", batch_id, "verification.json"))
+              ci_file     = enhance_sidecar_path(path, File.join("batches", batch_id, "ci_results.json"))
+              test_file   = enhance_sidecar_path(path, File.join("batches", batch_id, "test_results.json"))
+              apply_file  = enhance_sidecar_path(path, File.join("batches", batch_id, "apply.json"))
+
+              next if File.exist?(verify_file)  # batch complete, check next
+
+              return "e_ci_checking"  if File.exist?(test_file) && !File.exist?(ci_file)
+              return "e_testing"      if File.exist?(apply_file) && !File.exist?(test_file)
+              return "e_applying"
+            end
+          end
+        end
+
+        # (3) batches.json exists with no batch progress → e_awaiting_batch_approval
+        return "e_awaiting_batch_approval"
+      end
+
+      # (4) decisions.json exists without batches.json → e_awaiting_decisions
+      return "e_awaiting_decisions" if has_enhance_decisions
+
+      # (5) analysis.json exists — check research_status.json for pending topics
+      if File.exist?(enhance_research_status_file)
+        begin
+          statuses = JSON.parse(File.read(enhance_research_status_file))
+          non_rejected = statuses.reject { |t| t["status"] == "rejected" }
+          all_complete = non_rejected.all? { |t| t["status"] == "completed" }
+          # (6) All research complete → e_extracting (chain hasn't run yet if no decisions.json)
+          return all_complete ? "e_extracting" : "e_awaiting_research"
+        rescue JSON::ParserError
+          return "e_awaiting_research"
+        end
+      end
+
+      # analysis.json exists but no research_status.json → awaiting research
+      "e_awaiting_research"
+    end
+
+    public
 
     # ── Selection / Analysis ─────────────────────────────────────
 

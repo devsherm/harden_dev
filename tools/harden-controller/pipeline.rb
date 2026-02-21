@@ -37,6 +37,7 @@ require_relative "pipeline/claude_client"
 require_relative "pipeline/sidecar"
 require_relative "pipeline/shared_phases"
 require_relative "pipeline/orchestration"
+require_relative "pipeline/enhance_orchestration"
 require_relative "pipeline/lock_manager"
 require_relative "pipeline/scheduler"
 
@@ -46,12 +47,17 @@ class Pipeline
   include Sidecar
   include SharedPhases
   include Orchestration
+  include EnhanceOrchestration
 
   # Synchronized accessors — never expose @state directly.
   # Use workflow_status / workflow_data for route guards.
 
   def phase
     @mutex.synchronize { @state[:phase] }
+  end
+
+  def scheduler
+    @scheduler
   end
 
   def workflow_status(name)

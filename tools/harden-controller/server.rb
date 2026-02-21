@@ -473,6 +473,203 @@ post "/pipeline/retry" do
   { status: "retrying", controller: controller }.to_json
 end
 
+# ── Enhance Mode Routes ──────────────────────────────────────
+
+# Start enhance analysis (E0) for a controller.
+# Guard: workflow must be h_complete or e_enhance_complete.
+# Dispatches via Scheduler when available, falls back to safe_thread.
+post "/enhance/analyze" do
+  content_type :json
+  body = parse_json_body
+  controller = body["controller"]
+  halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
+
+  ok, err = $pipeline.try_transition(controller, guard: ["h_complete", "e_enhance_complete"], to: "e_analyzing")
+  halt 409, { error: err }.to_json unless ok
+
+  if $pipeline.scheduler
+    $pipeline.scheduler.enqueue(WorkItem.new(
+      workflow: controller,
+      phase: :e_analyze,
+      lock_request: LockRequest.new(write_paths: []),
+      callback: ->(_grant_id) { $pipeline.run_enhance_analysis(controller) }
+    ))
+  else
+    $pipeline.safe_thread(workflow_name: controller) { $pipeline.run_enhance_analysis(controller) }
+  end
+
+  { status: "enhancing", controller: controller }.to_json
+end
+
+# Submit research result (manual paste) or reject a research topic.
+# Body: { controller, topic_index, action: "paste"|"reject", result: "..." (for paste) }
+post "/enhance/research" do
+  content_type :json
+  body = parse_json_body
+  controller   = body["controller"]
+  topic_index  = body["topic_index"]
+  action       = body["action"]
+  halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
+  halt 400, { error: "topic_index required" }.to_json if topic_index.nil?
+  halt 400, { error: "action must be 'paste' or 'reject'" }.to_json unless %w[paste reject].include?(action)
+
+  case action
+  when "paste"
+    result = body["result"]
+    halt 400, { error: "result required for paste action" }.to_json if result.nil? || result.empty?
+    $pipeline.submit_research(controller, topic_index.to_i, result)
+    { status: "research_submitted", controller: controller, topic_index: topic_index }.to_json
+  when "reject"
+    $pipeline.reject_research_topic(controller, topic_index.to_i)
+    { status: "topic_rejected", controller: controller, topic_index: topic_index }.to_json
+  end
+end
+
+# API-based research for a topic — fires a Claude API call in background.
+# Body: { controller, topic_index }
+post "/enhance/research/api" do
+  content_type :json
+  body = parse_json_body
+  controller  = body["controller"]
+  topic_index = body["topic_index"]
+  halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
+  halt 400, { error: "topic_index required" }.to_json if topic_index.nil?
+
+  $pipeline.submit_research_api(controller, topic_index.to_i)
+  { status: "research_started", controller: controller, topic_index: topic_index }.to_json
+end
+
+# Submit enhance item decisions (E5).
+# Body: { controller, decisions: { item_id => "TODO"|"DEFER"|"REJECT", ... } }
+post "/enhance/decisions" do
+  content_type :json
+  body = parse_json_body
+  controller = body["controller"]
+  decisions  = body["decisions"]
+  halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
+  halt 400, { error: "decisions required" }.to_json if decisions.nil?
+
+  ok, err = $pipeline.submit_enhance_decisions(controller, decisions)
+  halt 409, { error: err }.to_json unless ok
+
+  $pipeline.safe_thread(workflow_name: controller) { $pipeline.run_batch_planning(controller) }
+
+  { status: "decisions_received", controller: controller }.to_json
+end
+
+# Approve current batch plan (E6) — starts batch execution (E7-E10).
+# Body: { controller }
+post "/enhance/batches/approve" do
+  content_type :json
+  body = parse_json_body
+  controller = body["controller"]
+  halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
+
+  ok, err = $pipeline.try_transition(controller, guard: "e_awaiting_batch_approval", to: "e_applying")
+  halt 409, { error: err }.to_json unless ok
+
+  if $pipeline.scheduler
+    $pipeline.scheduler.enqueue(WorkItem.new(
+      workflow: controller,
+      phase: :e_applying,
+      lock_request: LockRequest.new(write_paths: []),
+      callback: ->(_grant_id) { $pipeline.run_batch_execution(controller) }
+    ))
+  else
+    $pipeline.safe_thread(workflow_name: controller) { $pipeline.run_batch_execution(controller) }
+  end
+
+  { status: "batch_execution_started", controller: controller }.to_json
+end
+
+# Reject current batch plan and request re-planning (E6).
+# Body: { controller, notes: "operator notes" }
+post "/enhance/batches/replan" do
+  content_type :json
+  body = parse_json_body
+  controller = body["controller"]
+  notes      = body["notes"]
+  halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
+
+  ok, err = $pipeline.replan_batches(controller, operator_notes: notes)
+  halt 409, { error: err }.to_json unless ok
+
+  { status: "replanning", controller: controller }.to_json
+end
+
+# Retry last failed enhance phase (from error status).
+# Body: { controller }
+post "/enhance/retry" do
+  content_type :json
+  body = parse_json_body
+  controller = body["controller"]
+  halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
+
+  ok, err = $pipeline.try_transition(controller, guard: "error", to: "e_analyzing")
+  halt 409, { error: err }.to_json unless ok
+
+  $pipeline.safe_thread(workflow_name: controller) { $pipeline.run_enhance_analysis(controller) }
+
+  { status: "retrying_enhance", controller: controller }.to_json
+end
+
+# Retry batch from E7 (apply) after e_tests_failed.
+# Body: { controller }
+post "/enhance/retry-tests" do
+  content_type :json
+  body = parse_json_body
+  controller = body["controller"]
+  halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
+
+  ok, err = $pipeline.try_transition(controller, guard: "e_tests_failed", to: "e_awaiting_batch_approval")
+  halt 409, { error: err }.to_json unless ok
+
+  if $pipeline.scheduler
+    $pipeline.scheduler.enqueue(WorkItem.new(
+      workflow: controller,
+      phase: :e_applying,
+      lock_request: LockRequest.new(write_paths: []),
+      callback: ->(_grant_id) { $pipeline.run_batch_execution(controller) }
+    ))
+  else
+    $pipeline.safe_thread(workflow_name: controller) { $pipeline.run_batch_execution(controller) }
+  end
+
+  { status: "retrying_tests", controller: controller }.to_json
+end
+
+# Retry batch from E7 (apply) after e_ci_failed.
+# Body: { controller }
+post "/enhance/retry-ci" do
+  content_type :json
+  body = parse_json_body
+  controller = body["controller"]
+  halt 400, { error: "No controller specified" }.to_json if controller.nil? || controller.empty?
+
+  ok, err = $pipeline.try_transition(controller, guard: "e_ci_failed", to: "e_awaiting_batch_approval")
+  halt 409, { error: err }.to_json unless ok
+
+  if $pipeline.scheduler
+    $pipeline.scheduler.enqueue(WorkItem.new(
+      workflow: controller,
+      phase: :e_applying,
+      lock_request: LockRequest.new(write_paths: []),
+      callback: ->(_grant_id) { $pipeline.run_batch_execution(controller) }
+    ))
+  else
+    $pipeline.safe_thread(workflow_name: controller) { $pipeline.run_batch_execution(controller) }
+  end
+
+  { status: "retrying_ci", controller: controller }.to_json
+end
+
+# Get current lock state (active grants, queue depth, active items).
+get "/enhance/locks" do
+  content_type :json
+  state = JSON.parse($pipeline.to_json)
+  (state["locks"] || {}).to_json
+end
+
 # ── Shutdown ──────────────────────────────────────────────
 
 post "/shutdown" do
